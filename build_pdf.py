@@ -17,11 +17,12 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate, Paragraph, Preformatted, Spacer,
-    Table, TableStyle, PageBreak,
+    BaseDocTemplate, Frame, Image, KeepTogether, PageTemplate, Paragraph,
+    Preformatted, Spacer, Table, TableStyle, PageBreak,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,7 +35,9 @@ DOCS = [
     "docs/01-design.md",
     "docs/02-implementation.md",
     "docs/03-usage.md",
-    "docs/04-lessons-and-gotchas.md",
+    "docs/04-workflows.md",
+    "docs/05-strategy-payoffs.md",
+    "docs/06-lessons-and-gotchas.md",
 ]
 
 # ── Fonts (Arial for broad Greek/math glyph coverage, Consolas for mono) ──────
@@ -77,6 +80,8 @@ CODE = S("code", fontName="Mono", fontSize=8, leading=11, textColor=INK,
          backColor=CODEBG, borderPadding=6, spaceBefore=4, spaceAfter=8)
 CELL = S("cell", fontName="Body", fontSize=8.4, leading=11.5, textColor=INK)
 CELLH = S("cellh", fontName="Body-Bold", fontSize=8.4, leading=11.5, textColor=colors.white)
+CAPTION = S("caption", parent=BODY, fontName="Body-Italic", fontSize=8.2, leading=11,
+            textColor=MUTED, spaceBefore=1, spaceAfter=10, alignment=TA_CENTER)
 
 PAGE_W, PAGE_H = A4
 MARGIN = 20 * mm
@@ -123,7 +128,21 @@ def make_table(rows):
     return t
 
 
-def parse(md, story, first_doc):
+IMG_RE = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)\s*$")
+
+
+def image_flowable(alt, rel_path, base_dir):
+    path = os.path.normpath(os.path.join(base_dir, rel_path))
+    iw, ih = ImageReader(path).getSize()
+    w = USABLE_W * 0.96
+    h = w * ih / iw
+    parts = [Image(path, width=w, height=h)]
+    if alt.strip():
+        parts.append(Paragraph(inline(alt), CAPTION))
+    return KeepTogether(parts)
+
+
+def parse(md, story, first_doc, base_dir):
     lines = md.split("\n")
     i, n = 0, len(lines)
     started = False
@@ -158,6 +177,11 @@ def parse(md, story, first_doc):
             i += 1; continue
 
         if stripped == "---":
+            i += 1; continue
+
+        m = IMG_RE.match(stripped)
+        if m:
+            story.append(image_flowable(m.group("alt"), m.group("path"), base_dir))
             i += 1; continue
 
         if stripped.startswith("#### "):
@@ -231,8 +255,9 @@ def build():
     story = []
     title_page(story)
     for idx, rel in enumerate(DOCS):
-        with open(os.path.join(HERE, rel), encoding="utf-8") as f:
-            parse(f.read(), story, first_doc=(idx == 0))
+        full = os.path.join(HERE, rel)
+        with open(full, encoding="utf-8") as f:
+            parse(f.read(), story, first_doc=(idx == 0), base_dir=os.path.dirname(full))
     doc.build(story)
     print(f"wrote {OUT}")
 
