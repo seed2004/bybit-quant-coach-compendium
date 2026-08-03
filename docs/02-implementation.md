@@ -7,8 +7,23 @@ patterns. No source code; this is the "how it's put together" companion to the d
 
 ## 1. Module map (responsibilities, not code)
 
-The backend is ~45 small modules. The split that matters is **pure core** (math, testable
-offline) versus **I/O shell** (network, disk, endpoints).
+The backend is ~50 small modules. The split that matters is **pure core** (math, testable
+offline) versus **I/O shell** (network, disk, endpoints), with a thin **venue layer** between
+them.
+
+### Venue layer
+
+| Module | Responsibility |
+|---|---|
+| Venue spec | Pure data per exchange: contract sizes, fee rates and caps, delivery parameters, margin factors, listed underlyings, perp symbols, whether settlement is inverse — plus an explicit list of fields that could **not** be verified from the venue's own API |
+| Venue registry | Maps a venue id to its adapter, lazily; raises on an unknown venue rather than defaulting to one |
+| Adapters (one per venue) | The only code that knows a wire format: chain, spot, perp context, funding, candles → one canonical contract object. Normalizes IV units, converts coin-quoted prices at the index, and fills in greeks the venue does not publish |
+| Settlement | The currency guard on booked money: stamp, partition, currency-aware rounding, and a **refusal** to sum across currencies |
+| Venue check | Re-derives the spec's verifiable facts from the live instrument listing and reports disagreements |
+
+The spec module **imports nothing from the rest of the backend**. That is structural, not
+tidiness: the shared config re-exports the default spec's fields, so any import back into
+the application would close a cycle.
 
 ### Pure core — market & instrument math
 
@@ -50,8 +65,8 @@ offline) versus **I/O shell** (network, disk, endpoints).
 
 | Module | Responsibility |
 |---|---|
-| Public exchange client | Instruments, tickers, candles, linear index & funding |
-| Private exchange client | HMAC-signed read-only positions & wallet balance |
+| Public exchange clients | Instruments, tickers, candles, linear index & funding — one per venue, reached only through that venue's adapter |
+| Private exchange clients | Read-only positions & wallet balance. One venue signs each request (HMAC); the other exchanges client credentials for a short-lived read-scoped bearer token |
 | Reference client | External venue's DVOL index + option book summary; delta reconstructed locally |
 | Portfolio store | Leg CRUD; close (carries entry-context into the closed ledger); volume summary |
 | Accounts store | Sub-account management; per-account directories; credential load/save |
@@ -227,7 +242,39 @@ clears its own minimum. The function's most important return value is the one wh
 clears: it returns *insufficient* rather than the pooled number, so a caller cannot
 accidentally quote thin evidence as if it were the measured rate.
 
-### 2.14 Background snapshot loop
+### 2.14 Routing a request through the active account's venue
+
+Every market-data call in the application layer goes through a small set of helpers —
+chain, spot, perp context, funding, candles — that resolve the active account's venue and
+dispatch to its adapter. Nothing above that layer names an exchange.
+
+Two implementation details carry most of the risk:
+
+- **The venue is resolved once, alongside the account directory snapshot** taken before the
+  first `await` (§1.3). An account switch landing mid-request must not be able to fetch one
+  venue's chain and store it under another venue's account.
+- **A canonical field name is not a safe global rename.** Renaming a field across the layer
+  also hit the *raw* exchange payloads that one endpoint still reads directly, which silently
+  removed that endpoint's spot anchor while every other route kept working. The reverted site
+  carries a comment saying why.
+
+### 2.15 Expressing the portfolio in the settlement currency
+
+The chain is normalized to USD at the adapter (§6.2 of the design) and booked money is stored
+unconverted (§6.3). Enrichment sits exactly where those two meet, and must reconcile them:
+on an inverse venue every field the trader reads as **money** — mark, bid, ask, close quote,
+unrealized P&L, theta, vega — is divided by the index so it lands in the same unit as the
+stored entry price, and unrealized P&L is then **recomputed from the converted mark** so it
+cannot drift from it.
+
+What deliberately does *not* convert: **prices** (spot, strike) stay USD because they are
+prices rather than money; **delta and gamma** stay as reported; and **theta efficiency** is
+computed from the USD figures on purpose, because its answer is a *price move*.
+
+With no index available, the money fields are **blanked** rather than left as USD numbers
+sitting under a coin label.
+
+### 2.16 Background snapshot loop
 
 Wake on a coarse interval. For each underlying, check whether a daily regime snapshot and/or
 an intraday IV snapshot is *due* (by UTC day and by session window). If either is due,

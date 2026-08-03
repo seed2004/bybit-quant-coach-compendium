@@ -22,6 +22,10 @@ code is included.
 - **A thin I/O shell.** A small async web layer fetches exchange data, reads/writes the
   JSON stores, and calls into the pure core. Endpoints are deliberately dumb: fetch,
   compute, serialize.
+- **A venue layer between the two.** Each exchange is described by a **spec** (pure data:
+  contract sizes, fee rates and caps, which underlyings it lists, how it settles) and an
+  **adapter** (the only code that knows that exchange's wire format). Everything above them
+  talks to one canonical contract object and never to an exchange. See §6.
 
 The discipline of "math is pure, I/O is a shell" is the single most important structural
 decision. It is why every model below could be verified in isolation.
@@ -85,17 +89,33 @@ Only two endpoints: current option positions and unified wallet balance. HMAC-si
 requests. **No trade, transfer, or withdrawal endpoint is ever called** — this is enforced
 by simply never implementing them in the client.
 
-### 2.3 Deribit public (v2) — external reference only
+### 2.3 Deribit — two distinct roles
 
-Two unauthenticated calls: the DVOL volatility index and the option book summary. Used to
-answer "are we rich or cheap versus the deepest-liquidity venue?" — always labeled as an
-external reference, never fed silently into any signal.
+Deribit appears twice in the system, and conflating the two would be a category error:
 
-### 2.4 The index-price gotcha
+- **As an external reference (public, unauthenticated).** The DVOL volatility index and the
+  option book summary, used to answer "are we rich or cheap versus the deepest-liquidity
+  venue?" — always labeled as an external reference, never fed silently into any signal. This
+  overlay is **hidden on a Deribit account**, where it would be a comparison with itself
+  rendered as a row of zeros that reads like agreement.
+- **As a first-class venue an account can trade on** (public chain + private read-only
+  positions and balances). This is what §6 is about.
 
-Bybit option tickers carry an `underlyingPrice` field that is **unreliable**. Spot is taken
-instead from the **linear perpetual's `indexPrice`**. Getting this wrong poisons every
+### 2.4 The index-price gotcha, and its bigger sibling
+
+Bybit option tickers carry an `underlyingPrice` field that is **unreliable** as spot. Spot is
+taken instead from the **linear perpetual's `indexPrice`**. Getting this wrong poisons every
 downstream calculation (OTM amount, margin, moneyness, greeks), so it is centralized.
+
+Both venues, it turns out, publish **two different underlying prices per expiry**: a
+per-expiry **forward** *and* an **index**. They are not the same number — on one live
+observation the forward sat **3.93% above** the index. The rule the system settles on:
+
+- **greeks are computed on the forward** (that is what the option is written on), and
+- **money conversions use the index** (that is what settles).
+
+Using one where the other belongs is a ~4% error in the moneyness of every strike, and it
+looks entirely ordinary.
 
 ---
 
@@ -106,11 +126,13 @@ downstream calculation (OTM amount, margin, moneyness, greeks), so it is central
 Realized P&L is computed **net of exchange fees**, because on a premium-selling book fees
 are not a rounding error — on the reference book they ran roughly **13% of gross P&L**.
 
-- **Trading fee per fill** = `min(rate × index, 7% × option_price) × size`
+- **Trading fee per fill** = `min(rate × index, cap × option_price) × size`
   - taker rate ≈ 0.03%, maker ≈ 0.02%.
-  - The **7%-of-premium cap** is the subtle part: for far-OTM cheap legs the percentage-of-
-    premium term is smaller than the percentage-of-index term, so the cap binds. Ignoring it
-    overstates the fee on exactly the legs a strangle-seller trades most.
+  - The **percentage-of-premium cap is the subtle part**, and it is a **venue** parameter —
+    7% on one exchange, 12.5% on the other. For far-OTM cheap legs the percentage-of-premium
+    term is smaller than the percentage-of-index term, so the cap binds. Ignoring it
+    overstates the fee on exactly the legs a strangle-seller trades most; hardcoding one
+    venue's value understates it on the other by nearly a factor of two.
 - **Delivery (settlement) fee** = `min(deliveryRate × index, 12.5% × intrinsic) × size`,
   charged **only on exercise** (in-the-money at expiry); an out-of-the-money expiry is free.
   - `deliveryRate` ≈ 0.015% for BTC/ETH, ≈ 0.02% for alt underlyings.
@@ -728,3 +750,138 @@ That shapes the risk view:
   wide-but-not-wide-enough strikes.
 - Defined-risk structures are structurally favored in scoring, and the calibration loop can
   only *tilt*, never *override*, the market-signal and risk-limit gates.
+
+---
+
+## 6. Multi-venue accounts, and inverse settlement
+
+An account belongs to **one venue**, fixed at creation. Everything the account sees — the
+asset list, the credential labels, the chain, the positions, the margin panel, the currency
+its P&L is denominated in — follows from that. This section is the design that makes a second
+exchange possible without forking the engine.
+
+### 6.1 Which book to integrate — a decision made by measurement
+
+Deribit lists BTC options in **two separate books**, and they are not interchangeable:
+
+| | coin-margined `BTC-*` | `BTC_USDC-*` |
+|---|---|---|
+| instruments listed | 866 | 468 |
+| with a two-sided quote | 808 | 392 |
+| open interest | **323,905 BTC** | 7,367 BTC (**2.3%**) |
+
+The USDC book would have been far easier — it is linear, so it behaves like the existing
+venue and needs none of §6.3–6.5. It is also, on the evidence, **not where the market is**.
+Integrating the easy book would have produced a working feature that nobody could trade at
+size. The coin-margined book was chosen because the numbers said so, and the entire
+inverse-settlement problem below is the price of that choice.
+
+### 6.2 Normalise at the edge
+
+The strategy engine, the playbook, the payoff math and the scoring exist once. Making them
+venue-aware would mean threading a venue through every function and adding a branch at every
+site — the shape of change that produces subtle divergence between two code paths that are
+*supposed* to agree.
+
+Instead, **each adapter converts its venue's wire format into one canonical contract object**,
+with implied vol as a decimal, prices in USD, and greeks on the forward. Above the adapter,
+nothing knows which exchange it is looking at. A coin-quoted premium is multiplied by the
+index at the adapter boundary; vol points are divided by 100 there; the venue's own greeks are
+reproduced there (with Black-76 where they are not published, verified against the venue's own
+figures to a worst error of 0.00002 in delta).
+
+### 6.3 The one thing that must **not** be normalised: booked money
+
+This is the single most important rule in the multi-venue design, and it contradicts §6.2 on
+purpose.
+
+Sell 1 BTC put for **0.01 BTC** with BTC at $60,000; buy it back for **0.005 BTC** with BTC at
+$90,000:
+
+| | premium | index | in USD |
+|---|---|---|---|
+| open | 0.01 BTC | $60,000 | $600 |
+| close | 0.005 BTC | $90,000 | $450 |
+
+The account **keeps +0.005 BTC**, worth **$450** today. A naive USD difference says
+**+$150**. Both look reasonable. They differ by **3×**.
+
+The error is not arithmetic — it is that a round trip has **two ends at two different
+indices**, so there is no single exchange rate at which the difference is meaningful. Booked
+money is therefore stored, summed, and displayed **in the currency it was actually booked
+in**, and never converted after the fact.
+
+### 6.4 The principle that resolves §6.2 against §6.3
+
+> **Converting is valid for a snapshot and invalid for booked money.**
+
+Every screener figure is a *ratio or a comparison at one instant* — yield, breakeven distance,
+probability of profit, the ranking of two candidates. One index at one moment leaves all of
+them invariant, so normalising the chain changes nothing about the answer. Realized P&L is
+not a comparison at an instant; it is a difference between two instants. That is the whole
+distinction, and every case falls cleanly on one side of it.
+
+Two consequences the system enforces mechanically:
+
+- **A coin P&L and a stablecoin P&L are never summed.** `0.05 BTC + 300 USDT = 300.05` is not
+  wrong by a detectable margin — it is wrong by a *category*, and it looks exactly like a
+  number. Any attempt to total across currencies raises rather than averaging.
+- **On an inverse venue there is no single book currency.** A BTC leg books BTC and an ETH leg
+  books ETH, so the book-level currency field is deliberately **empty** and the per-leg
+  currency is the truth. Emitting one label there would be a label waiting to be applied to
+  the wrong number.
+- **Currencies are stamped at write time**, so a leg keeps the denomination it was actually
+  booked in even if the account's venue spec later changes. Records written before any of this
+  existed are read as the stablecoin, which is what every one of them actually is.
+
+### 6.5 Precision is a property of the currency
+
+Two decimal places is right for a stablecoin and **destroys a coin ledger**: at $63,000/BTC
+the second decimal is $630. A 0.0049 BTC round-trip fee (~$490) rounds to `0.00`; a 0.004 BTC
+P&L (~$400) rounds to zero. Money is therefore rounded to the precision its currency can
+actually carry — cents for stablecoins, satoshis for coins — and an **unknown** currency gets
+*coin* precision, because over-rounding destroys money while under-rounding only looks untidy.
+
+The display layer mirrors the storage layer exactly, for the same reason.
+
+### 6.6 Degrade honestly: no number where the model does not apply
+
+Adding a venue means discovering which parts of the system were quietly venue-specific. The
+initial-margin formula is one exchange's; the fee premium cap differs (7% versus 12.5%); the
+contract size differs by 100×.
+
+The rule adopted: **where a model does not describe the active venue, the system says so
+rather than returning a confident number computed with another exchange's parameters.** That
+is wrong in the one direction that matters — sizing — and it looks entirely ordinary. So the
+margin figure on a venue with no initial-margin factors of its own is marked *not modelled*,
+greyed, and accompanied by an instruction to size from the exchange's own panel. The same flag
+travels with the per-leg column and the risk summary, so the two tabs cannot contradict each
+other.
+
+### 6.7 Venue facts are claims about the world, not constants
+
+A wrong venue fact is **invisible**: every calculation uses the same wrong value on both
+sides, so nothing ever disagrees. That is exactly how one venue's ETH contract size sat at
+0.01 for months while the exchange reported 0.1 on all 548 listed ETH options.
+
+Two defences:
+
+- Anything that **can** be re-derived from the venue's own instrument metadata is re-derived
+  by an automated check that compares the stored spec against the live listing.
+- Anything that **cannot** is named in an explicit `unverified` list on the spec itself, and
+  the output that depends on it carries a warning. Margin factors, fee caps and delivery
+  parameters that live on dynamically-rendered help pages sit here — carried as flagged
+  placeholders, never as quiet assumptions.
+
+### 6.8 Read-only by construction
+
+The second venue authenticates differently — an OAuth2 client-credentials exchange yielding a
+short-lived bearer token, rather than a per-request signature — so the credential fields are
+**relabelled per venue** (client ID / client secret versus API key / API secret). Labelling
+them wrongly is how someone pastes the wrong credential and then debugs an auth error that
+was never ambiguous.
+
+The read-only guarantee is unchanged and enforced the same way: a read-only scope is requested
+explicitly, and **no order, transfer, or withdrawal endpoint is implemented at all**. The
+entire client was built and tested against a stubbed transport, offline, without credentials —
+which is also the reason it could be written without ever asking the trader for keys.

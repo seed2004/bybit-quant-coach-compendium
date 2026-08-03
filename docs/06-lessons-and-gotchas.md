@@ -1,4 +1,4 @@
-# 04 — Lessons & gotchas
+# 06 — Lessons & gotchas
 
 The bugs, surprises, and rules that came out of actually building and running the system.
 These are the parts most worth carrying to any similar project.
@@ -30,14 +30,17 @@ These are the parts most worth carrying to any similar project.
 
 - **Fees are ~13% of gross on a premium book.** Model them or your P&L is fiction. Both the
   open and the close fill are charged; a round trip is two trading fees.
-- **The 7%-of-premium fee cap binds on cheap OTM legs** — exactly the legs a strangle-seller
-  trades most. Omitting the cap overstates their cost.
+- **The percentage-of-premium fee cap binds on cheap OTM legs** — exactly the legs a
+  strangle-seller trades most. Omitting it overstates their cost; hardcoding one venue's
+  value (7% on one exchange, 12.5% on the other) understates it on the other by nearly 2x.
 - **Delivery fees exist, both sides, on exercise — except daily options.** OTM expiry is free.
   The "which term binds" `min(rate × index, 12.5% × intrinsic)` structure is why fee-adjusted
   breakeven needs a root-finder, not a formula.
-- **Contract size is not universal.** BTC/ETH are 0.01 of the underlying per contract; SOL is
-  1.0. Storing quantity in *underlying units* keeps margin math size-agnostic and prevents
-  100x errors — but contract *counts* still need the per-underlying size.
+- **Contract size varies by underlying AND by venue.** 0.01 for BTC/ETH on one exchange, 1.0
+  for SOL, and 1.0 for BTC on the other exchange — a 100x gap for the same asset. Storing
+  quantity in *underlying units* keeps margin math size-agnostic; contract *counts* still
+  need the per-venue, per-underlying size, and getting it from the wrong venue reported a
+  0.9-contract book as 90.
 - **Never let `inf`/`nan` reach JSON.** An infinite profit factor (no losses yet) must be
   `null`; infinity breaks the browser's JSON parse and silently blanks the screen.
 - **A mid-based credit is not a conservative estimate, it is a different number.** On a put
@@ -138,7 +141,73 @@ These are the parts most worth carrying to any similar project.
   thinner cells; keeping the pooled minimum while the cells shrink is how a two-observation
   "rate" gets published.
 
-## 4. Empirical findings worth remembering
+## 4. Multi-venue and inverse settlement
+
+The recurring theme of this whole project, stated once: **the dangerous bugs are the ones
+where every individual number is internally consistent.** Adding a second exchange produced
+three of them in a row.
+
+- **A wrong venue constant is invisible.** Every calculation uses the same wrong value on both
+  sides, so nothing ever disagrees. One venue's ETH contract size sat at 0.01 for months while
+  the exchange reported 0.1 on all 548 listed ETH options. Anything re-derivable from the
+  venue's own API is now re-derived by an automated check; anything that is not is named in an
+  explicit "unverified" list, and the output that depends on it carries a warning.
+- **Pick the book by measurement, not by ease of integration.** The linear USDC book would
+  have needed none of the inverse work. It also carries **2.3%** of the coin-margined book's
+  open interest. Integrating the easy one would have shipped a working feature nobody could
+  trade at size.
+- **Two correct decisions can be jointly wrong.** Normalising the chain to USD was right (one
+  engine ranks both venues). Storing booked money unconverted was right (a round trip has two
+  ends at two different indices). Nothing reconciled them where they met, so a 0.0003 BTC
+  entry was compared against a 6.28 USD ask and Capture% printed **−2,091,700%**. Every input
+  was individually correct.
+- **The tell for a units bug is a number too absurd to be a modelling error.** −2,091,700% is
+  not a bad model, it is a unit mismatch — and back-solving it (`(entry − ask)/entry = −20917`
+  ⇒ entry = 0.00030022) identified the exact pair of quantities before a single line was
+  changed. Reverse-engineer the absurd number rather than guessing at the cause.
+- **The same mismatch hides completely when the scales are far apart.** The payoff chart
+  subtracted a USD intrinsic from a coin premium, so the entire credit contributed 0.0004
+  against a −6,168 loss and simply vanished. The curve looked plausible. What exposed it was a
+  structural impossibility: the reported breakeven sat **above the highest strike in the
+  book**, which no short-put book can do.
+- **Derive the rule, don't patch the case.** "Converting is valid for a snapshot and invalid
+  for booked money" resolves every instance — screener, portfolio, cash-flow, payoff — because
+  a snapshot figure is invariant under one exchange rate at one instant and a round trip is
+  not. Patching each screen separately would have produced four different conventions.
+- **Category errors look exactly like numbers.** `0.05 BTC + 300 USDT = 300.05` is not wrong
+  by a detectable margin. The guard has to *refuse*, not round.
+- **Rounding is part of the unit.** Two decimal places is correct for a stablecoin and
+  destroys a coin ledger — at \$63,000/BTC the second decimal is \$630, so a \$490 fee prints
+  as `0.00`. An **unknown** currency gets coin precision, because over-rounding destroys money
+  while under-rounding only looks untidy.
+- **Emit no label rather than a plausible one.** On an inverse venue a BTC leg books BTC and an
+  ETH leg books ETH, so a book-level currency field is a label waiting to be attached to the
+  wrong number. Leave it empty.
+- **When a model does not describe the venue, say so — don't compute.** Presenting one
+  exchange's margin formula as a confident figure on another is wrong in the single direction
+  that matters, sizing, and looks entirely ordinary. The flag travels with both the per-leg
+  column and the risk summary so the two tabs cannot contradict each other.
+- **A stale label is worse than no label.** "Import from \<other exchange\>" on the wrong
+  venue, an "undefined positions" panel that reads as *no margin used* rather than *wrong data
+  shape*, a note filter matching one venue's exact wording so the other venue's imports
+  cluttered every row. Any user-visible exchange name must come from the venue, never a
+  literal.
+- **Verify a ported model against the source it claims to reproduce.** Black-76 on the
+  per-expiry forward matches the venue's own published greeks to 0.00002 in delta and 0.03% in
+  vega. That agreement is what proves the model, the forward, and the IV units were *all* read
+  correctly — three things that would each be silently wrong on their own.
+- **Compare rounded values with an absolute tolerance.** The venue publishes gamma to 5
+  decimals, so a deep-ITM call's true 6.2e-07 reads as exactly 0.0. No relative tolerance can
+  ever match a rounded zero.
+- **A canonical field name is not a safe global rename.** Renaming a field across the venue
+  layer also hit the *raw* exchange payloads one endpoint still read directly, silently
+  removing its spot anchor while every other route kept working.
+- **A read-only client can be built and tested without ever holding a credential.** The entire
+  private integration was written against a stubbed transport, offline. Requesting a read-only
+  scope and never implementing an order endpoint is what makes the guarantee structural rather
+  than procedural.
+
+## 5. Empirical findings worth remembering
 
 - **The ATM vol-risk premium is razor-thin.** Over ~30-day horizons, implied ≈ realized-
   forward. A naked-strangle book's edge is therefore **not** ATM richness — it is the OTM
@@ -150,7 +219,7 @@ These are the parts most worth carrying to any similar project.
   ~6% of the time versus ~2% under normal theory — a direct argument against wide-but-not-
   wide-enough long-dated naked puts.
 
-## 5. Product & UX lessons
+## 6. Product & UX lessons
 
 - **Color the decision, not the number.** When a value's meaning depends on interpretation,
   make the color track the *decision* (is this a good exit?) and demote the raw detail (spread
@@ -169,7 +238,7 @@ These are the parts most worth carrying to any similar project.
 - **Remove redundant alerting.** A separate notification badge was built and then deleted once
   the trade brief already surfaced the same priority items. Duplicated nudges erode trust.
 
-## 6. Engineering & operational lessons
+## 7. Engineering & operational lessons
 
 - **Pure core, I/O shell.** Keeping all math in pure functions is what made every model
   testable offline against synthetic fixtures. It is the structural decision everything else
@@ -192,7 +261,7 @@ These are the parts most worth carrying to any similar project.
 
 ---
 
-## 7. The one-line summary
+## 8. The one-line summary
 
 Build the boring, honest plumbing first — executable prices, real fees, correct margin,
 lookahead-free backtests, sample-gated statistics — and *then* the synthesis on top is

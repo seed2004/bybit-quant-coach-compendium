@@ -195,6 +195,59 @@ Three consequences the system depends on:
    in coin terms — it produces a curve that looks *almost right*. See
    [06 — Lessons](06-lessons-and-gotchas.md).
 
+### 3.5 The inverse-P&L trap, and the rule that resolves it **[S]**
+
+A round trip on an inverse option has **two ends at two different indices**, so there is no
+single exchange rate at which a USD difference is meaningful. With premium $p$ in coin and
+index $S$:
+
+$$\text{coin P\&L} = q\,(p_{\text{open}} - p_{\text{close}}), \qquad
+\text{naive USD} = q\,(p_{\text{open}}S_{\text{open}} - p_{\text{close}}S_{\text{close}})$$
+
+Worked example — sell 1 BTC put at 0.01 BTC with $S=60{,}000$, buy it back at 0.005 BTC with
+$S=90{,}000$:
+
+| | premium | index | USD |
+|---|---|---|---|
+| open | 0.01 | 60,000 | 600 |
+| close | 0.005 | 90,000 | 450 |
+
+The account **keeps $+0.005$ BTC $= \$450$ today**. The naive USD difference says
+$+\$150$. Both look reasonable; they differ by **3×**.
+
+**The rule that decides every case:**
+
+> **Converting is valid for a snapshot and invalid for booked money.**
+
+Every screener figure is a *ratio or a comparison at one instant* — yield, breakeven distance,
+probability of profit, the ordering of two candidates. Formally, if a reported quantity
+$f(\cdot)$ is homogeneous of degree 0 in a common scale factor $\lambda$ applied to every
+money input at that instant,
+
+$$f(\lambda x_1, \dots, \lambda x_n) = f(x_1, \dots, x_n)$$
+
+then normalising the chain by one index at one moment leaves it **invariant** — which is
+exactly why §6.2's edge-normalisation is safe for the whole screener. Realized P&L is not
+such a function: it is a difference across two instants, and $\lambda$ is different at each.
+
+Two mechanical consequences:
+
+- **A coin P&L and a stablecoin P&L are never summed.** $0.05\ \text{BTC} + 300\ \text{USDT}
+  = 300.05$ is not wrong by a detectable margin — it is wrong by a **category**, and it looks
+  exactly like a number. Totalling across currencies raises rather than averaging.
+- **On an inverse venue there is no single book currency**: a BTC leg books BTC, an ETH leg
+  books ETH. The book-level currency is deliberately empty and the per-leg currency is the
+  truth.
+
+### 3.6 Money precision is a property of the currency **[S]**
+
+$$\text{dp}(c) = \begin{cases} 2 & c \in \{\text{USDT, USDC, USD, DAI, BUSD}\}\\[2pt] 8 & \text{otherwise, including unknown}\end{cases}$$
+
+Two decimals is right for a stablecoin and **destroys a coin ledger**: at \$63,000/BTC the
+second decimal is \$630, so a 0.0049 BTC fee (≈\$490) rounds to `0.00` and a 0.004 BTC P&L
+(≈\$400) rounds to zero. An **unknown** currency is given *coin* precision on purpose —
+over-rounding destroys money, under-rounding only looks untidy.
+
 ---
 
 ## 4. The variance / volatility risk premium

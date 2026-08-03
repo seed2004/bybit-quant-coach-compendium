@@ -215,8 +215,25 @@ def math_to_rl(tex: str) -> str:
 _INLINE_MATH = re.compile(r"(?<!\$)\$(?![\d\s$])([^$\n]+?)(?<!\$)\$(?!\$)")
 
 
+# Markdown backslash-escapes. They must be lifted out BEFORE the math, code and
+# emphasis passes (so an escaped char is never treated as syntax) and restored
+# LAST (so the backslash itself never reaches the page). Writing "\$630" is the
+# correct way to keep a currency amount out of GitHub's math extension, and it
+# was printing the backslash.
+_MD_ESCAPE = re.compile(r"\\([$*_`\[\]|\\#])")
+_ESC_SENTINEL = "\x04"
+
+
 def inline(text):
     """Escape XML, then re-apply markdown emphasis + inline code as reportlab markup."""
+    escaped: list[str] = []
+
+    def _hold(m):
+        escaped.append(m.group(1))
+        return f"{_ESC_SENTINEL}{len(escaped) - 1}{_ESC_SENTINEL}"
+
+    text = _MD_ESCAPE.sub(_hold, text)
+
     # Inline math is lifted out before escaping and re-inserted after, because
     # math_to_rl does its own escaping and emits tags that must not be escaped.
     math: list[str] = []
@@ -238,7 +255,14 @@ def inline(text):
                   r'<font color="#1f6feb">\1</font>', text)
     if math:
         text = re.sub(r"\x00(\d+)\x00", lambda m: math[int(m.group(1))], text)
+    if escaped:
+        text = re.sub(_ESC_SENTINEL + r"(\d+)" + _ESC_SENTINEL,
+                      lambda m: _xml(escaped[int(m.group(1))]), text)
     return text
+
+
+def _xml(ch: str) -> str:
+    return {"&": "&amp;", "<": "&lt;", ">": "&gt;"}.get(ch, ch)
 
 
 def make_table(rows):
