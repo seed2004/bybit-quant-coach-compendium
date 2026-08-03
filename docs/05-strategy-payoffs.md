@@ -14,6 +14,14 @@ A single rule organizes the whole library: **defined-risk structures are structu
 favored in scoring**, and any structure with a naked tail is flagged as such. Read every
 diagram tail-first — *where does the loss stop?*
 
+> **These diagrams are linear — i.e. stablecoin-settled.** On a **coin-margined (inverse)**
+> venue the same structure settles in the underlying, so its payoff is divided by the delivery
+> price: a short put's loss is `max(K−S,0)/S` in coin, not `max(K−S,0)` in USD. **The curve
+> bends and the breakeven moves** — for a short put it is `K/(1+premium)` rather than
+> `K − premium`. The strategy *shapes* below are unchanged and the tail-first reading still
+> applies; the exact geometry does not. See [01 — Design §6.3](01-design.md) and
+> [07 §3.4](07-math-and-references.md).
+
 ---
 
 ## Neutral premium-selling (the core income structures)

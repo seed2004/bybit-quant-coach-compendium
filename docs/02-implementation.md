@@ -251,7 +251,7 @@ dispatch to its adapter. Nothing above that layer names an exchange.
 Two implementation details carry most of the risk:
 
 - **The venue is resolved once, alongside the account directory snapshot** taken before the
-  first `await` (§1.3). An account switch landing mid-request must not be able to fetch one
+  first `await` ([01 — Design §1.3](01-design.md)). An account switch landing mid-request must not be able to fetch one
   venue's chain and store it under another venue's account.
 - **A canonical field name is not a safe global rename.** Renaming a field across the layer
   also hit the *raw* exchange payloads that one endpoint still reads directly, which silently

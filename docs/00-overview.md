@@ -8,7 +8,7 @@ weekly and daily expiries) but operationally punishing for a solo trader:
 1. **The data is scattered.** Implied-vol surface, skew, term structure, funding, realized
    vol, open-interest/gamma positioning, and your own live greeks live in five different
    places. Deciding whether vol is *rich* right now means assembling all of it by hand.
-2. **The exchange hides the true cost.** Bybit's option *mark* price is theoretical; the
+2. **The exchange hides the true cost.** An option *mark* price is theoretical; the
    price you can actually transact is the bid/ask. Fees (trading + delivery) quietly eat a
    double-digit percentage of gross P&L. A position that looks green on mark can be a loss
    to close.
@@ -19,10 +19,16 @@ weekly and daily expiries) but operationally punishing for a solo trader:
    short strangles on BTC — an uncapped-tail posture. That demands a risk lens that never
    lets a "looks fine on mark" reading hide a tail that is quietly growing.
 
+5. **"Profitable" and "an income stream" are different claims.** Per-trade expectancy says
+   nothing about whether a book can be *lived off*. That is a question about months and
+   capital, and it needs its own measurements — including the honest ones about how much a
+   single bad month takes back.
+
 The system exists to collapse all of that into a handful of screens that answer concrete
 questions: *Is vol cheap or rich? What structure fits this regime? Which of my legs needs
-attention? Can I actually get out of this position, and at what cost? Where is my real
-edge?*
+attention? Can I actually get out of this position, and at what cost? Is the theta on this
+leg actually being paid for? Should I roll it — and has rolling ever worked for me? How much
+can I withdraw per month without eating the account? Where is my real edge?*
 
 ## Product philosophy
 
@@ -56,6 +62,12 @@ These held for the entire life of the project and shaped every feature:
    the browser's parser). Undefined ratios are `null`, not infinity.
 5. **Clearly flag estimated or missing data.** Anything unverified, placeholder, or
    soft-failed is labeled as such in the surface that shows it.
+6. **Money keeps the currency it was booked in.** A coin-settled P&L and a stablecoin P&L are
+   never summed — that is a category error that looks exactly like a number — and money is
+   rounded to the precision its currency can actually carry.
+7. **No number where the model does not apply.** Where a formula describes one venue and not
+   the active one, the system says so rather than computing a confident figure with another
+   exchange's parameters.
 
 ## Technology at a glance
 
@@ -66,6 +78,11 @@ These held for the entire life of the project and shaped every feature:
   for each surface; a multi-account switcher.
 - **Storage:** flat JSON files on disk (per-account portfolios and closed trades; global
   market-history stores). No database.
-- **Data sources:** Bybit public V5 (instruments, tickers, candles, linear/perp index &
-  funding), Bybit private V5 read-only (positions, wallet balance), Deribit public v2
-  (DVOL index + option book summary) as an external reference.
+- **Venues:** two supported, and an account belongs to one, fixed at creation. Each is
+  described by a **spec** (pure data: contract sizes, fee rates and caps, listed underlyings,
+  whether settlement is inverse) and an **adapter** that converts its wire format into one
+  canonical contract object. Everything above that layer is venue-agnostic.
+- **Data sources:** per venue — public market data (instruments/tickers or book summary,
+  candles, perpetual index and funding) and a **read-only** private endpoint pair (positions,
+  wallet balance). The second venue also appears separately as a labeled *external reference*
+  (DVOL index + book summary), which is hidden on an account that trades there.
