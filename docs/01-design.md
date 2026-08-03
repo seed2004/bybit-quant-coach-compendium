@@ -4,6 +4,11 @@ This document is the conceptual core: the architecture and the full library of q
 models the system is built on. Formulas are given because they *are* the ideas; no source
 code is included.
 
+> Every formula referenced here is stated in full — with its provenance tag and a numbered
+> citation — in [07 — Math & references](07-math-and-references.md). Where this document
+> says "Yang-Zhang" or "HAR-inspired" or "the delivery-fee cap", that document says exactly
+> what the expression is and where it comes from.
+
 ---
 
 ## 1. Architecture
@@ -381,7 +386,7 @@ next timer tick.
 - **Secret hygiene is the real leak guard.** Credentials, the account directory, the
   bring-your-own-key file, and the market-history files are all excluded from version control.
   Encryption is defense-in-depth; the ignore rules are the primary control. (See
-  [04 — Lessons](04-lessons-and-gotchas.md) for the incident that taught this the hard way.)
+  [06 — Lessons](06-lessons-and-gotchas.md) for the incident that taught this the hard way.)
 
 ---
 

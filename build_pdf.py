@@ -38,6 +38,7 @@ DOCS = [
     "docs/04-workflows.md",
     "docs/05-strategy-payoffs.md",
     "docs/06-lessons-and-gotchas.md",
+    "docs/07-math-and-references.md",
 ]
 
 # ── Fonts (Arial for broad Greek/math glyph coverage, Consolas for mono) ──────
@@ -82,17 +83,161 @@ CELL = S("cell", fontName="Body", fontSize=8.4, leading=11.5, textColor=INK)
 CELLH = S("cellh", fontName="Body-Bold", fontSize=8.4, leading=11.5, textColor=colors.white)
 CAPTION = S("caption", parent=BODY, fontName="Body-Italic", fontSize=8.2, leading=11,
             textColor=MUTED, spaceBefore=1, spaceAfter=10, alignment=TA_CENTER)
+MATH = S("math", parent=BODY, fontName="Body-Italic", fontSize=10.4, leading=16,
+         textColor=INK, alignment=TA_CENTER, spaceBefore=7, spaceAfter=9)
 
 PAGE_W, PAGE_H = A4
 MARGIN = 20 * mm
 USABLE_W = PAGE_W - 2 * MARGIN
 
 
+# ── LaTeX subset -> reportlab markup ─────────────────────────────────────────
+# The docs write formulas as GitHub-flavoured LaTeX ($inline$ and $$display$$)
+# so they render properly on GitHub. reportlab has no TeX engine, so the subset
+# actually used across docs/ is translated to Unicode + <super>/<sub> markup.
+# Scope is deliberately small: if a formula needs more than this, it belongs in
+# a fenced code block, not in a half-rendered equation.
+
+_SYMBOLS = {
+    r"\sigma": "σ", r"\Sigma": "Σ", r"\Gamma": "Γ", r"\gamma": "γ",
+    r"\Theta": "Θ", r"\theta": "θ", r"\Delta": "Δ", r"\delta": "δ",
+    r"\varphi": "φ", r"\phi": "φ", r"\nu": "ν", r"\pi": "π", r"\mu": "μ",
+    r"\alpha": "α", r"\beta": "β", r"\lambda": "λ", r"\rho": "ρ", r"\tau": "τ",
+    r"\epsilon": "ε", r"\omega": "ω",
+    r"\times": "×", r"\cdot": "·", r"\approx": "≈", r"\sim": "∼",
+    r"\le": "≤", r"\leq": "≤", r"\ge": "≥", r"\geq": "≥", r"\neq": "≠",
+    r"\pm": "±", r"\infty": "∞", r"\int": "∫", r"\partial": "∂",
+    r"\Rightarrow": "⇒", r"\rightarrow": "→", r"\to": "→", r"\ast": "*",
+    r"\dots": "…", r"\ldots": "…", r"\cdots": "…", r"\in": "∈",
+    r"\sum": "Σ", r"\prod": "∏",
+    # \tfrac12 is the brace-less shorthand; the brace-matching \frac handler
+    # never sees it, so it is mapped directly.
+    r"\tfrac12": "½", r"\dfrac12": "½", r"\frac12": "½",
+}
+# Spacing/sizing commands that carry no meaning outside TeX's layout engine.
+_DROP = [r"\left", r"\right", r"\bigl", r"\bigr", r"\Bigl", r"\Bigr",
+         r"\big", r"\Big", r"\bigg", r"\Bigg", r"\!", r"\displaystyle"]
+_THIN = [r"\quad", r"\qquad", r"\,", r"\;", r"\:", r"\ "]
+
+_LBRACE, _RBRACE = "\x01", "\x02"   # sentinels for TeX-escaped literal braces
+# Accents that carry no glyph here: the symbol itself is what matters.
+_ACCENTS = (r"\hat", r"\widehat", r"\bar", r"\overline", r"\tilde", r"\vec")
+_TEXTISH = (r"\text", r"\mathrm", r"\mathbf", r"\mathrm", r"\operatorname",
+            r"\boxed", r"\mathit")
+
+
+def _group(s: str, i: int) -> tuple[str, int]:
+    """s[i] must be '{'. Return (contents, index just past the matching '}').
+    Brace-counting, so nested groups survive — which a regex cannot do, and
+    which every non-trivial \\frac in these docs contains."""
+    depth = 0
+    for j in range(i, len(s)):
+        if s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return s[i + 1:j], j + 1
+    return s[i + 1:], len(s)          # unbalanced: take the rest
+
+
+def _apply(s: str, names, nargs: int, fmt) -> str:
+    """Rewrite every \\name{...}(x nargs) with fmt(*args), recursing into the
+    arguments first so inner fractions and roots resolve."""
+    out, i = [], 0
+    while i < len(s):
+        hit = next((nm for nm in names
+                    if s.startswith(nm, i) and s[i + len(nm):i + len(nm) + 1] == "{"), None)
+        if hit is None:
+            out.append(s[i]); i += 1
+            continue
+        args, j = [], i + len(hit)
+        for _ in range(nargs):
+            if j >= len(s) or s[j] != "{":
+                break
+            arg, j = _group(s, j)
+            args.append(_apply(arg, names, nargs, fmt))
+        if len(args) != nargs:
+            out.append(s[i]); i += 1          # malformed — leave it alone
+            continue
+        out.append(fmt(*args))
+        i = j
+    return "".join(out)
+
+
+def math_to_rl(tex: str) -> str:
+    """Translate a LaTeX fragment to reportlab inline markup.
+
+    XML-escaping happens FIRST so the <super>/<sub> tags this emits survive.
+    """
+    s = tex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # TeX-escaped literals, before anything interprets the backslash.
+    s = s.replace(r"\{", _LBRACE).replace(r"\}", _RBRACE)
+    # A literal underscore must NOT survive as "_", or the subscript pass below
+    # turns avg\_price into avg<sub>p</sub>rice.
+    s = (s.replace(r"\&amp;", "&amp;").replace(r"\%", "%")
+          .replace(r"\_", "\x03").replace(r"\#", "#"))
+
+    for cmd in _DROP:
+        s = s.replace(cmd, "")
+    for cmd in _THIN:
+        s = s.replace(cmd, " ")
+
+    # Wrappers that only change typeface, then accents — both just unwrap.
+    s = _apply(s, _TEXTISH, 1, lambda a: a)
+    s = _apply(s, _ACCENTS, 1, lambda a: a)
+    for cmd in _ACCENTS:              # bare form: \hat\sigma
+        s = s.replace(cmd + " ", " ").replace(cmd, "")
+
+    s = _apply(s, (r"\dfrac", r"\tfrac", r"\frac"), 2, lambda a, b: f"({a})/({b})")
+    s = _apply(s, (r"\sqrt",), 1, lambda a: f"√({a})")
+    s = re.sub(r"\\sqrt\s*([A-Za-z0-9])", r"√\1", s)
+
+    # Longest-first so \Sigma is not eaten by \sigma's prefix.
+    for cmd in sorted(_SYMBOLS, key=len, reverse=True):
+        s = s.replace(cmd, _SYMBOLS[cmd])
+
+    s = _apply(s, ("^",), 1, lambda a: f"<super>{a}</super>")
+    s = _apply(s, ("_",), 1, lambda a: f"<sub>{a}</sub>")
+    s = re.sub(r"\^([^\s{}])", r"<super>\1</super>", s)
+    s = re.sub(r"_([^\s{}])", r"<sub>\1</sub>", s)
+
+    # Anything still prefixed with a backslash is a function name (\max, \ln,
+    # \arg…) — keep the word, drop the marker.
+    s = re.sub(r"\\([a-zA-Z]+)", r"\1", s)
+    s = s.replace("{", "").replace("}", "")
+    s = s.replace(_LBRACE, "{").replace(_RBRACE, "}").replace("\x03", "_")
+    return re.sub(r"\s{2,}", " ", s).strip()
+
+
+# The opening $ must not be followed by a digit or space, so a currency amount
+# ("cost $261 versus $305") is never mistaken for a math span.
+_INLINE_MATH = re.compile(r"(?<!\$)\$(?![\d\s$])([^$\n]+?)(?<!\$)\$(?!\$)")
+
+
 def inline(text):
     """Escape XML, then re-apply markdown emphasis + inline code as reportlab markup."""
+    # Inline math is lifted out before escaping and re-inserted after, because
+    # math_to_rl does its own escaping and emits tags that must not be escaped.
+    math: list[str] = []
+
+    def _stash(m):
+        math.append(math_to_rl(m.group(1)))
+        return f"\x00{len(math) - 1}\x00"
+
+    text = _INLINE_MATH.sub(_stash, text)
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     text = re.sub(r"`([^`]+)`", r'<font face="Mono" size="8.6">\1</font>', text)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
+    # Links: raw "[text](target)" was printing verbatim. An http target becomes
+    # clickable; an intra-compendium .md target is a page in this same PDF, so
+    # the URL would be dead — the label alone is the useful part.
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+                  r'<link href="\2" color="#1f6feb">\1</link>', text)
+    text = re.sub(r"\[([^\]]+)\]\((?!https?://)[^)\s]*\)",
+                  r'<font color="#1f6feb">\1</font>', text)
+    if math:
+        text = re.sub(r"\x00(\d+)\x00", lambda m: math[int(m.group(1))], text)
     return text
 
 
@@ -157,6 +302,25 @@ def parse(md, story, first_doc, base_dir):
                 buf.append(lines[i]); i += 1
             i += 1
             story.append(Preformatted("\n".join(buf), CODE))
+            continue
+
+        # display math: a $$ block (fenced across lines, or all on one line)
+        if line.strip().startswith("$$"):
+            one = line.strip()
+            if one.endswith("$$") and len(one) > 4:
+                body = one[2:-2]
+                i += 1
+            else:
+                i += 1
+                buf = []
+                while i < n and not lines[i].strip().startswith("$$"):
+                    buf.append(lines[i].strip()); i += 1
+                i += 1
+                body = " ".join(buf)
+            # A \\ inside display math is a line break between aligned rows.
+            for row in re.split(r"\\\\", body):
+                if row.strip():
+                    story.append(Paragraph(math_to_rl(row), MATH))
             continue
 
         # table (a header line followed by a |---| separator)
