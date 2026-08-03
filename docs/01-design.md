@@ -544,6 +544,157 @@ theta (already multiplied by quantity) while gamma and vega are *per-unit*. Mixi
 scales leaves a stray quantity inside the square root and produces a plausible, wrong
 breakeven. Everything converts to per-unit first.
 
+### 3.22 The monthly-income layer — earn, support, and don't chase
+
+Everything else in the system measures a **trade**: expectancy, win rate, profit factor, hold
+time. *"Can I live off this?"* is a different question — it is about **time and capital, not
+about trades** — and none of the per-trade statistics answer it. A book can have an excellent
+expectancy per trade and still be unusable as an income stream if the month-to-month path is
+violent enough.
+
+Three layers, each answering the question the previous one exposes.
+
+#### A — What did the months actually do?
+
+Realized P&L bucketed by the calendar month a trade **closed** in, net of fees, plus:
+
+- **Return on the margin that was tied up to earn it.** 500 on 5,000 of margin and 500 on
+  50,000 are not the same business. Margin at entry is reconstructed with the same formula the
+  risk tab uses, which needs the index at entry — so trades opened before entry-context
+  capture existed are **reported as uncovered rather than guessed at**, with the coverage
+  percentage stated.
+- **Consistency, expressed as the number that actually decides it.** Not the average:
+  **how many average winning months the worst month erased.** For a negatively-skewed
+  short-vol book that ratio is what determines whether the income is spendable.
+- **Drawdown on the cumulative curve**, with whether and how quickly it recovered.
+
+Two honesty rules are load-bearing:
+
+- **The current month is incomplete and is excluded from every statistic** — including it
+  flatters or damns the record at random. It is still *shown*, flagged as partial.
+- **This is a realized-P&L curve, not account equity.** Open positions are not marked. A
+  short-vol book can show a beautifully smooth realized curve while carrying a large
+  unrealized loss it has not taken yet — which is precisely the failure mode a "monthly
+  income" framing encourages. Every report says so.
+
+And the gate: monthly statistics need **months, not trades**. A hundred trades inside three
+months is still three data points, so below a minimum of complete months every derived
+statistic is withheld and the reason is printed.
+
+#### B — How much can come out before the program stops surviving?
+
+Fitting a distribution to a dozen observations of a negatively-skewed, fat-tailed return
+stream produces a clean number worth nothing. So the system **bootstraps from the months
+actually observed** — resampling with replacement, compounding equity proportionally, taking
+the withdrawal in cash afterwards, seeded so the answer does not move between reloads.
+
+That buys honesty at a price which is restated every time it is shown:
+
+> **A bootstrap cannot produce a month worse than the worst one observed.** If the sample has
+> not lived through a crash, every path is optimistic and the ruin rate is a **floor, not an
+> estimate**.
+
+**The distinction that makes this layer worth having.** There are two different "how much can
+I take out" questions, and the obvious one is not the one people mean:
+
+- **Max sustainable** = the largest withdrawal whose ruin rate stays inside a tolerance. Its
+  test only cares about not falling below a ruin threshold — so it will happily approve a path
+  that consumes most of the account. On the reference book, a +555/month average produced a
+  "sustainable" **2,966/month while the median account fell from 100k to 38k**. That is
+  capital depletion on a schedule, not income.
+- **Max preserving** = the largest withdrawal that still leaves the **median path with at
+  least its starting capital** at the horizon. This is living off the income rather than
+  eating the principal, and it is the number the cadence layer checks targets against.
+
+Both are found by bisection and **rounded down, never to nearest** — a safety limit was
+chosen because it clears a threshold, and rounding it up can push the reported figure past the
+very threshold that selected it. A returned `0` is a real answer: *even withdrawing nothing
+breaches the tolerance*, i.e. the sample does not support drawing an income at all.
+
+**The tail budget sits deliberately alongside, not inside, the bootstrap.** Because the
+resampling cannot invent a crash, the stress number is computed by **repricing the current
+book under a shock** — which does not depend on the sample having contained one — and is
+expressed in the only unit that makes an uncapped-tail book legible:
+
+> *"A 20% move erases N months of average income."* Premium selling accumulates income
+> linearly and gives it back in jumps. This is the size of one jump.
+
+#### C — The guardrail: what a target does to behaviour when the month runs short
+
+Phases A and B measure what the book earns and what it can support. Phase C watches the thing
+that destroys both: **the behaviour a monthly target induces when the month is behind.**
+
+The failure mode is specific and predictable. Two thirds through the month, income is behind
+target, and the fastest way to close the gap is to sell more premium — bigger size, or strikes
+closer to spot. Both raise risk precisely when the motivation is a number rather than a setup.
+On a naked short book, that is how a good year ends.
+
+So this layer refuses to make progress look easier than it is:
+
+- **Premium sold is not income.** Credit collected on legs still open is an **obligation** —
+  it can be handed back in full and then some. It is reported separately and **never added to
+  booked P&L**. A trader "hitting target" on open premium has hit nothing.
+- **The target is checked against measured capacity, not accepted as given.** If it exceeds
+  the preserving withdrawal from layer B, the target is not ambitious, it is *unsupported* —
+  and no amount of pace fixes that. This is raised as a critical warning regardless of how the
+  month is going.
+- **Risk headroom is checked before pace.** If the margin budget is already spent, the gap
+  cannot be closed within the plan at any pace, and the only honest answer is that the month
+  ends where it ends.
+- **Pace is expressed as a multiple of normal.** *"Needs 3.4× your usual daily rate with 9
+  days left"* is a statement about pressure; *"behind by 400"* is not. Past a stretch multiple
+  the advice is to decide **now** that you will accept missing the target; past a chase
+  multiple the warning names the mechanism — *"a number that far out of reach is how size
+  creeps up and strikes drift toward spot: the trade gets taken for the target, not the
+  setup."*
+
+The verdict orders **pressure first, progress second** — a book that is nominally on pace but
+has already spent its margin budget reads as *chasing risk*, not as *on pace*.
+
+### 3.23 Wheel cycles
+
+A small store that links related legs — a cash-secured put and the covered call that follows
+assignment — into one **cycle**, so premium collected, net cost basis (`strike − total
+premium`, the break-even if assigned) and full P&L are tracked across the whole structure
+rather than per leg. Cycle statistics are **derived at query time** from the portfolio and
+closed ledgers rather than stored, so they cannot drift out of sync with the legs they
+describe.
+
+### 3.24 Pin evidence — measuring the practitioner constructs
+
+§3.11's gamma machinery (max pain, GEX, zero-gamma flip) is **practitioner folklore with a
+real mechanism underneath it** and no canonical academic definition. Rather than trusting it
+or discarding it, the system **measures it on this venue's own data**.
+
+Every day, each live expiry gets one row: max pain, spot, the gap between them, net GEX, the
+gamma zone at spot. Once the expiry passes, the row sequence becomes a completed sample. Two
+tests, in a deliberate order of trustworthiness:
+
+1. **Settlement evidence — the real test.** Where the expiry actually printed: did it land
+   closer to max pain than it started, and did it settle within a tolerance of the pin?
+2. **Convergence evidence — a proxy.** Did the spot-to-max-pain gap narrow between the first
+   and the last pre-expiry capture?
+
+Everything is scored on the **context at first capture** — the gamma zone, the approach
+direction — because that is what a forecast would actually have had available. Scoring on
+context known later would be a lookahead in miniature.
+
+The honesty rules mirror the rest of the system, with one addition that matters:
+
+- An expiry needs **≥2 captures** to measure convergence at all; a single row is dropped.
+- **Daily expiries are segmented out and never silently pooled.** The pinning literature is
+  about *serial* expirations carrying real open interest; crypto dailies carry very little, so
+  pooling them with the monthlies drowns the signal in noise that looks like data.
+- **The sample gate rises with the cut.** Segmenting splits the same evidence into thinner
+  cells, so a segment must clear its own higher bar rather than inheriting the pooled minimum.
+
+The advice layer consumes this through a **preference hierarchy** — settlement evidence over
+convergence, and within each, the most specific segment that clears its own bar, falling back
+to pooled. When nothing clears, the answer is **`sufficient: false` with no rate at all**, and
+callers are required to say the pin is **unmeasured** rather than quietly reverting to
+asserting that pins hold. That last rule is the whole point of the store: it converts a belief
+into either a number or an admission.
+
 ---
 
 ## 4. Security design

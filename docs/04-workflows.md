@@ -174,7 +174,52 @@ Before selling any premium, decide whether premium is worth selling *now*.
    week's playbook toward what has actually worked for you (capped so market signals still
    dominate).
 
-## 11. Asking the desk advisor
+## 11. The monthly income review
+
+Run once a month, after the month closes. This is the workflow that decides whether the book
+is an *income stream* or merely a profitable strategy — they are not the same thing, and only
+this one can tell them apart.
+
+1. **Read the completed months, never the running one.** The in-progress month is shown but
+   excluded from every statistic; a partial month flatters or damns the record at random.
+   Below the minimum number of complete months, no averages are quoted at all — a hundred
+   trades inside three months is still three data points.
+2. **Look at months-erased-by-worst before the average.** How many average *winning* months
+   the worst month wiped out. On a negatively-skewed short-vol book this ratio, not the mean,
+   decides whether the income is spendable.
+3. **Read return on margin, not just P&L.** 500 earned on 5,000 of margin and 500 on 50,000
+   are different businesses. Check the coverage figure too — trades opened before entry-context
+   capture have no recorded index, so their margin is left out rather than guessed.
+4. **Remember what the equity curve is.** Realized P&L only. Open positions are not marked, so
+   a smooth line here is entirely compatible with a large unrealized loss you have not taken.
+5. **Read the preserving withdrawal, not the sustainable one.** The "sustainable" figure only
+   promises you will not hit the ruin floor — it will happily approve a withdrawal that
+   consumes most of the account on the way. The preserving figure is the one that leaves the
+   median path with its capital intact. If you want a number to live on, that is the number.
+6. **Treat the ruin rate as a floor.** The bootstrap resamples the months you have actually
+   lived through, so **it cannot produce a month worse than your worst**. If your sample has
+   no crash in it, every path is optimistic.
+7. **Read the tail budget instead, for the tail.** A repriced shock on the *current* book,
+   expressed as months of average income. This one does not need your sample to have contained
+   a crash — which is exactly why it exists next to the bootstrap rather than inside it.
+8. **Set next month's target against capacity, not against ambition.** If the target exceeds
+   the preserving withdrawal, hitting it consistently means drawing down principal, whatever
+   any individual month does.
+
+## 12. Mid-month: the cadence check
+
+1. **Booked P&L is progress. Premium sold is not.** Open credit is an obligation that can be
+   handed back in full and then some; it is reported separately and never added.
+2. **Check headroom before pace.** If the margin budget is already spent, the gap cannot be
+   closed within the plan at any pace, and the month ends where it ends.
+3. **Read pace as a multiple of your normal daily rate.** "3.4× your usual rate with 9 days
+   left" is a statement about pressure; "behind by 400" is not.
+4. **Past the stretch multiple, decide now that you will accept missing the target.** Deciding
+   in advance is the whole point — the failure mode is not a bad trade, it is a trade taken for
+   the target rather than for the setup, and it arrives as size creeping up and strikes
+   drifting toward spot.
+
+## 13. Asking the desk advisor
 
 A book-aware assistant workflow for judgment questions ("should I roll this?", "is this vol
 cheap?", "size this", "where's my edge?"):

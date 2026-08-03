@@ -41,6 +41,9 @@ offline) versus **I/O shell** (network, disk, endpoints).
 | Scenario | Reprice the book under spot/IV/time shocks (Black-Scholes); P&L, margin, breakeven breaches |
 | Expiry focus | Per-held-expiry max-pain / GEX; gamma-zone tagging of your strikes |
 | Carry | Dated-futures basis vs funding vs VRP; rule-based income verdict |
+| Cashflow | Monthly realized ledger net of fees; return on margin-at-entry; consistency (months-erased-by-worst); realized equity curve and drawdown |
+| Sustain | Seeded bootstrap of monthly returns; max-sustainable vs max-preserving withdrawal by bisection; tail budget in months of income |
+| Cadence | Month progress with open premium kept separate from booked P&L; target-vs-capacity and margin-headroom checks; pace as a multiple of normal |
 | Backtests | Walk-forward RV studies and IV-rule studies; no lookahead |
 
 ### I/O shell
@@ -54,6 +57,8 @@ offline) versus **I/O shell** (network, disk, endpoints).
 | Accounts store | Sub-account management; per-account directories; credential load/save |
 | Regime history | Daily market snapshots; percentile / movement context |
 | IV history | Intraday session-keyed IV snapshots; own-range percentile; seasonality |
+| Pin history | Daily max-pain / GEX / gap rows per (underlying, expiry); settlement and convergence reports, segmented; the pin-prior lookup with its evidence hierarchy |
+| Cycles store | Wheel cycles linking a CSP to its follow-on CC; stats derived at query time, never stored |
 | Crypto | Passphrase-based encryption at rest |
 | Auth | Optional login gate |
 | App / endpoints | ~40 routes wiring the above together |
@@ -177,7 +182,52 @@ The book-level roll-up reports how many legs scored, how many are underpaid, how
 suspect greeks, and the median edge ratio — deliberately the median, since one deep-OTM leg
 with a near-zero gamma can produce an enormous ratio that a mean would not survive.
 
-### 2.11 Background snapshot loop
+### 2.11 Searching for a withdrawal limit
+
+Both withdrawal limits are found the same way, and the shape of the search is the interesting
+part. Start with a bracket `[0, hi]`; **double `hi` until it actually fails the test**, because
+a bracket whose upper end still passes would let bisection converge to the bracket edge and
+report a limit that was never tested. Then bisect a fixed number of times, always keeping the
+*passing* side as the lower bound. Finally **floor** the result to two decimals.
+
+Before searching at all, test $W=0$. If withdrawing nothing already fails, return `0` with a
+note — that is the real answer, and a bisection over an empty feasible set would otherwise
+return a meaningless number.
+
+The two tests differ only in the predicate: ruin rate within tolerance (sustainable) versus
+median terminal equity at or above starting capital (preserving). Reusing one search with a
+swappable predicate is what makes it obvious that they are the *same* procedure answering
+*different* questions — which is the point the numbers themselves make loudly.
+
+### 2.12 Assembling the cadence check
+
+Compute what the month has booked and, **separately**, the premium sold on legs opened this
+month that are still open. The second number is never added to the first anywhere in the
+pipeline; it is passed through to the UI as its own field with its own label.
+
+Then run the checks in a fixed order, because the order encodes which objection dominates:
+first whether the target exceeds measured capacity (a structural problem no month can fix),
+then whether margin headroom exists to add at all (if not, pace is moot), and only then pace
+as a multiple of the normal daily rate. Any input may be absent — average month, preserving
+withdrawal, margin figures all come from other layers — and a missing input **withholds its
+check** rather than substituting a default. The verdict reads pressure before progress: a
+critical warning outranks being nominally on pace.
+
+### 2.13 Turning pin snapshots into evidence
+
+Group rows by expiry; keep expiries strictly in the past that have at least two captures
+carrying a usable gap. For each, take the first and last capture: the gap at each end, whether
+it narrowed, and — critically — the **context at first capture** (gamma zone, net GEX,
+approach direction) as the "prediction" being scored. Classify the expiry as
+daily/weekly/monthly/quarterly from its calendar position rather than from a listing flag.
+
+Rates are then computed per segment with an $n$ attached to every one, and the pin-prior
+lookup walks the hierarchy from most to least trustworthy, returning the first cell that
+clears its own minimum. The function's most important return value is the one where nothing
+clears: it returns *insufficient* rather than the pooled number, so a caller cannot
+accidentally quote thin evidence as if it were the measured rate.
+
+### 2.14 Background snapshot loop
 
 Wake on a coarse interval. For each underlying, check whether a daily regime snapshot and/or
 an intraday IV snapshot is *due* (by UTC day and by session window). If either is due,
@@ -195,6 +245,8 @@ Roughly 40 endpoints, grouped:
   carry, the RV and IV backtests.
 - **Portfolio:** enriched legs (with live mark, greeks, executable close quote, per-leg
   margin), volume summary, cycles, risk summary, analytics.
+- **Income:** the monthly cash-flow ledger and equity curve, the sustainability report
+  (bootstrap, both withdrawal limits, tail budget), and the cadence check against a target.
 - **Coach:** the fused brief, scenario stress test, expiry focus, the roll analyzer (priced
   table + five-axis score) and the roll-chain evidence report, regime history, grounded
   natural-language Q&A.

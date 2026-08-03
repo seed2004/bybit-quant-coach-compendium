@@ -99,6 +99,44 @@ These are the parts most worth carrying to any similar project.
 - **Classify ambiguous samples against your own hypothesis.** A roll chain containing both an
   opportunistic and a defensive roll counts as **defensive**. The other choice would have
   quietly biased the evidence in rolling's favour — which is the question being tested.
+- **Check that your metric answers the question you think you asked.** A "max sustainable
+  withdrawal" whose only test is *don't hit the ruin floor* approved **2,966/month on a book
+  averaging +555**, while the median account fell from 100k to 38k. Every step was correct;
+  the *question* was wrong. The fix was a second limit — the largest withdrawal leaving the
+  median path with its capital intact — not a better search.
+- **Round a safety limit DOWN, never to nearest.** The value was chosen precisely because it
+  clears a threshold; rounding it up can push the number you display back across the very
+  threshold that selected it.
+- **Validate the bracket before you bisect.** Doubling the upper bound until it actually
+  *fails* is what makes the search meaningful — bisecting inside a bracket whose top still
+  passes converges to the bracket edge and reports a limit nothing ever tested.
+- **State a method's blind spot every time you show its output, not once in a docstring.** A
+  bootstrap cannot produce a month worse than the worst one observed, so on a sample with no
+  crash in it the ruin rate is a *floor*, not an estimate. That sentence ships with the number.
+- **When a method has a blind spot, put the compensating measure BESIDE it, not inside it.**
+  The tail budget reprices the current book under a shock, so it does not need the sample to
+  have contained one. Folding a synthetic tail into the resampling would have hidden which
+  part of the answer came from evidence and which from assumption.
+- **Money still owed is not money earned.** Premium collected on open legs is an obligation
+  that can be handed back in full and then some. It is reported next to booked P&L and never
+  added to it — a trader "hitting target" on open premium has hit nothing.
+- **Check the target against capacity before checking the pace.** If a monthly target exceeds
+  what the measured distribution supports, it is not a pace problem and no month can fix it.
+  Ordering the checks wrongly would let a structural objection be reported as a schedule.
+- **Express pressure as a multiple, not as a difference.** "Needs 3.4x your usual daily rate
+  with 9 days left" changes behaviour; "behind by 400" does not. The risk on an income book is
+  not the shortfall, it is the trade taken *for the target* rather than for the setup.
+- **Score a forecast on the information it would have had.** Pin evidence is segmented by the
+  gamma zone and approach direction at *first* capture, never at settlement. Segmenting on
+  anything learned later is lookahead in miniature — the same sin as the backtest slice, at a
+  smaller scale and much easier to miss.
+- **Make "not enough evidence" a return value, not a fallback.** The pin-prior lookup returns
+  *insufficient* rather than the pooled number when nothing clears its bar, so a caller cannot
+  quote thin evidence as though it were measured. A belief should resolve to a number or to an
+  admission — never to a default.
+- **Raise the sample bar when you cut the sample.** Segmenting splits the same evidence into
+  thinner cells; keeping the pooled minimum while the cells shrink is how a two-observation
+  "rate" gets published.
 
 ## 4. Empirical findings worth remembering
 

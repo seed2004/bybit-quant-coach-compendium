@@ -358,6 +358,40 @@ Three honesty rules make that sample meaningful:
   monthlies would drown the signal in noise that looks like data. Segmenting raises the
   minimum-$n$ bar rather than keeping it fixed while the cells get thinner.
 
+### 7.5 The two pin tests, and the evidence hierarchy **[S]**
+
+Two different statistics are computed, and they are **not** interchangeable.
+
+**Settlement rate — the real test.** Over recorded settlements, the fraction that printed
+closer to the pin than they started, and the fraction that settled within a tolerance of it:
+
+$$\text{moved toward} = \frac{\#\{\,\lvert S_{\text{settle}} - K^\ast\rvert < \lvert S_{\text{first}} - K^\ast\rvert\,\}}{n_{\text{settled}}}$$
+
+**Convergence rate — a proxy.** Over completed expiries, whether the gap narrowed between the
+first and last pre-expiry capture, with $g_t = \lvert S_t - K^\ast_t\rvert / S_t$:
+
+$$\text{converged} \iff g_{\text{last}} < g_{\text{first}}$$
+
+Convergence is weaker evidence: a gap can narrow and the expiry still settle far away. It
+exists because it accumulates faster — every completed expiry contributes, whereas settlement
+evidence needs a recorded settle price.
+
+**Segmentation is on the state at FIRST capture** — approach direction
+($\text{sgn}(K^\ast - S)$: is the pin above or below?) and the gamma zone at spot — because
+that is the information a forecast would actually have had. Segmenting on anything learned
+later is a lookahead in miniature.
+
+**The evidence hierarchy**, applied when the advice layer asks for a pin prior:
+
+$$\text{settlement} \succ \text{convergence}, \qquad \text{direction} \succ \text{zone} \succ \text{pooled}$$
+
+— the most trustworthy source first, and within it the most *specific* segment that clears its
+own minimum, falling back to pooled. When **nothing** clears, the function returns
+`sufficient: false` with **no rate at all**, and callers are required to report the pin as
+*unmeasured*. That fallback is the entire purpose of the store: it forces a practitioner
+belief to resolve into either a number or an explicit admission, never into a default
+assumption that pins hold.
+
 ---
 
 ## 8. Fees, margin, and breakeven
@@ -645,6 +679,50 @@ materially different capital base today makes the estimate wrong, and the report
 equity compounds proportionally, so a shrinking account earns proportionally smaller premium
 — holding size constant as equity falls would flatter every path.
 
+#### 10.2a Two different withdrawal questions **[S]**
+
+Let $R(W)$ be the bootstrapped ruin rate at withdrawal $W$ (paths ending below 30% of
+starting capital) and $M(W)$ the **median** terminal equity. Two limits can be defined, and
+they are not the same number:
+
+$$W_{\text{sust}} = \max\{\,W : R(W) \le \varepsilon\,\}, \qquad
+W_{\text{pres}} = \max\{\,W : M(W) \ge E_0\,\}$$
+
+$W_{\text{sust}}$ is the obvious construction and **not the one people mean**. Its test only
+forbids *falling below the ruin floor*; it is entirely satisfied by a path that consumes most
+of the account on the way. Measured on the reference book:
+
+| | value |
+|---|---|
+| average month | +555 |
+| $W_{\text{sust}}$ at a 5% ruin tolerance | **2,966 / month** |
+| median terminal equity under that withdrawal | **100k → 38k** |
+| $W_{\text{pres}}$ | far lower |
+
+A withdrawal that shrinks the median account by 62% over the horizon is capital depletion on
+a schedule, not income. **[M]** $W_{\text{pres}}$ — the largest withdrawal leaving the median
+path whole — is what the cadence layer (§10.6) checks a target against.
+
+Both are found by **bisection**, after doubling the upper bracket until it actually fails so
+the bracket is valid, and both are **rounded down, never to nearest**:
+
+$$W_{\text{reported}} = \frac{\lfloor 100\,W \rfloor}{100}$$
+
+A safety limit is selected *because* it satisfies a threshold; rounding it upward can push the
+reported figure back across the very threshold that chose it. A returned **0** is a real
+result, not a missing value: even withdrawing nothing breaches the tolerance.
+
+#### 10.2b Tail budget — the unit that makes an uncapped tail legible **[S]**
+
+$$\text{months of income} = \frac{\lvert \Delta\Pi_{\text{stress}}\rvert}{\overline{\Pi}_{\text{month}}}$$
+
+where $\Delta\Pi_{\text{stress}}$ comes from **repricing the live book** under a spot/IV/time
+shock (§3.1 pricing, applied to current positions), not from the sample. This is deliberate:
+§10.2's bootstrap cannot invent a crash, so the stress number must come from somewhere that
+does not depend on one having happened. Premium selling accumulates income linearly and
+returns it in jumps; this expresses the size of one jump in the only unit the trader budgets
+in.
+
 ### 10.3 Sequence-of-returns risk **[L]** — ref. [28]
 
 The reason a "monthly income" framing needs simulation at all rather than an average: with
@@ -668,6 +746,48 @@ $n$, and is materially better-behaved than the normal approximation) would be st
 informative than a hard gate: "62% ± 18pp on n=21" says more than either "62%" or nothing.
 This is a known, deliberate simplification and a documented candidate for future work — it
 is recorded here rather than quietly omitted.
+
+### 10.6 Income statistics: what a monthly series can and cannot support **[S]**
+
+Per-trade statistics (§10.4) do not answer *"can I live off this?"*, because that question is
+about **time and capital**, not about trades. The monthly series carries its own measures.
+
+**Consistency, for a negatively-skewed series.** The average is the wrong headline. The
+decisive quantity is how much of the good months one bad month removes:
+
+$$m_{\text{erased}} = \frac{\lvert \min_i \Pi_i \rvert}{\overline{\Pi}^{\,+}}, \qquad
+\overline{\Pi}^{\,+} = \frac{1}{|\{i:\Pi_i>0\}|}\sum_{\Pi_i>0}\Pi_i$$
+
+— the worst month divided by the average *winning* month. On a short-vol book this ratio, not
+the mean, decides whether the income is spendable.
+
+**Return on deployed margin, not on equity.** $\Pi_{\text{month}} / \sum_i \text{IM}_i$ where
+$\text{IM}_i$ is each closed trade's initial margin **at entry** (§8.3, evaluated at the index
+recorded at entry). Trades predating entry-context capture cannot have this reconstructed, so
+they are **excluded and the coverage percentage is reported** rather than imputed. The
+denominator is deliberately margin turned over, not account equity, which this data cannot
+know.
+
+**Drawdown on the realized curve.** Cumulative realized P&L over complete months, peak-to-
+trough, plus whether it recovered and in how many months. Stated explicitly as a **realized**
+curve: open positions are not marked, so a smooth line here is compatible with a large
+unrealized loss not yet taken — the exact failure mode a "monthly income" framing invites.
+
+**The gate.** Monthly statistics need **months**. A hundred trades inside three months is
+three data points; below a minimum of *complete* months every derived statistic is withheld
+and the reason printed. The in-progress month is excluded from all of them and shown
+separately.
+
+**Pace, as a multiple rather than a difference.** With gap $G$ and $d$ days remaining, against
+a normal daily rate $\overline{\Pi}_{\text{month}}/30$:
+
+$$\text{pace multiple} = \frac{G/d}{\overline{\Pi}_{\text{month}}/30}$$
+
+A multiple is a statement about *pressure* and a difference is not. Thresholds at 1.5× and
+2.5× separate "decide now that you will accept missing it" from "this is how size creeps up
+and strikes drift toward spot". The check runs **after** two prior gates — is the target
+itself within $W_{\text{pres}}$ (§10.2a), and is there margin headroom to add at all — because
+if either fails, pace is irrelevant.
 
 ---
 
