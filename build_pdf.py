@@ -109,7 +109,7 @@ _SYMBOLS = {
     r"\pm": "±", r"\infty": "∞", r"\int": "∫", r"\partial": "∂",
     r"\Rightarrow": "⇒", r"\rightarrow": "→", r"\to": "→", r"\ast": "*",
     r"\dots": "…", r"\ldots": "…", r"\cdots": "…", r"\in": "∈",
-    r"\sum": "Σ", r"\prod": "∏",
+    r"\sum": "Σ", r"\prod": "∏", r"\lvert": "|", r"\rvert": "|",
     # \tfrac12 is the brace-less shorthand; the brace-matching \frac handler
     # never sees it, so it is mapped directly.
     r"\tfrac12": "½", r"\dfrac12": "½", r"\frac12": "½",
@@ -250,7 +250,9 @@ def make_table(rows):
         w = max([len(header[c])] + [len(r[c]) if c < len(r) else 0 for r in body])
         weights.append(max(w, 6))
     tot = sum(weights)
-    col_w = [max(USABLE_W * w / tot, 26) for w in weights]
+    # Floor is per-column, in points. 26 squeezed a narrow column beside a very
+    # wide one down to "carr / y" — 44 fits a short label or a weight on one line.
+    col_w = [max(USABLE_W * w / tot, 44) for w in weights]
     scale = USABLE_W / sum(col_w)
     col_w = [w * scale for w in col_w]
 
@@ -304,18 +306,28 @@ def parse(md, story, first_doc, base_dir):
             story.append(Preformatted("\n".join(buf), CODE))
             continue
 
-        # display math: a $$ block (fenced across lines, or all on one line)
+        # Display math: a $$ block. The closing $$ may sit alone on its own line
+        # OR terminate the last line of the formula — scanning only for a line
+        # that STARTS with $$ ran straight past the latter and swallowed the
+        # following prose into the equation, which then rendered as one garbled
+        # line and left the next paragraph's inline math unprocessed.
         if line.strip().startswith("$$"):
-            one = line.strip()
-            if one.endswith("$$") and len(one) > 4:
-                body = one[2:-2]
+            head = line.strip()[2:]
+            if head.endswith("$$"):
+                body = head[:-2]
                 i += 1
             else:
+                buf = [head] if head.strip() else []
                 i += 1
-                buf = []
-                while i < n and not lines[i].strip().startswith("$$"):
-                    buf.append(lines[i].strip()); i += 1
-                i += 1
+                while i < n:
+                    cur = lines[i].strip()
+                    if cur.endswith("$$"):
+                        if cur[:-2].strip():
+                            buf.append(cur[:-2])
+                        i += 1
+                        break
+                    buf.append(cur)
+                    i += 1
                 body = " ".join(buf)
             # A \\ inside display math is a line break between aligned rows.
             for row in re.split(r"\\\\", body):
@@ -329,7 +341,17 @@ def parse(md, story, first_doc, base_dir):
             while i < n and lines[i].lstrip().startswith("|"):
                 if re.match(r"^\s*\|[\s:|-]+\|\s*$", lines[i]):
                     i += 1; continue
-                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                # Split on UNESCAPED pipes only. A cell containing \| (an
+                # absolute value, |θ|/|Γ|) was being cut at the backslash and
+                # the rest of the row silently dropped — the cells were then
+                # truncated to the column count, so nothing looked wrong.
+                raw = lines[i].strip()
+                if raw.startswith("|"):
+                    raw = raw[1:]
+                if raw.endswith("|") and not raw.endswith("\\|"):
+                    raw = raw[:-1]
+                cells = [c.strip().replace("\\|", "|")
+                         for c in re.split(r"(?<!\\)\|", raw)]
                 rows.append(cells); i += 1
             story.append(Spacer(1, 2))
             story.append(make_table(rows))

@@ -50,6 +50,12 @@ Before selling any premium, decide whether premium is worth selling *now*.
    up or down, that shows as a reason line on the ranked card.
 3. **Deep-link to the screener** with that strategy preselected; pick concrete, liquid
    strikes with acceptable credit / breakevens / probability-of-profit / annualized yield.
+   **Read the credit as the executable one** — shorts fill on the bid, longs on the ask, and
+   every leg pays a fee. Check **edge retention**: what fraction of the mid credit actually
+   survives the order book. A candidate retaining 20% is mostly a gift to the market maker,
+   and the two flags to respect are *credit vanishes* (mid says credit, the book says debit)
+   and *quote estimated* (the side you need is unquoted, so the price shown is a model price
+   — use a limit order and expect to negotiate).
 4. **Check the payoff shape** (KPIs: max profit, max risk, reward:risk) — and the diagram
    family in [05 — Strategy payoffs](05-strategy-payoffs.md) — so the risk profile is what
    you intend (especially: is the tail bounded?).
@@ -78,11 +84,33 @@ Before selling any premium, decide whether premium is worth selling *now*.
 1. **Open the roll analyzer** for the flagged leg.
 2. **Compare the two paths it tables**, soonest-expiry-first: **same-strike** (buy time only)
    and **strike-adjusted** (move further OTM toward a defensive delta target, buy time).
-3. **Read net credit/debit and resulting delta** per candidate expiry — it's a comparison
-   table, not one opaque "best" pick.
-4. **Prefer a roll that stays a credit** and moves delta toward neutral, unless you're
+3. **Compare on credit *per day*, not on the headline credit.** The VRP term structure slopes
+   down steeply, so rolling further out for a bigger absolute credit frequently buys *less*
+   premium per unit of time-risk. The per-day and yield-per-day columns exist because the raw
+   number is not comparable across expiries.
+4. **Read the credit as executable.** A roll crosses the spread **twice** and pays a fee on
+   both fills. The *mid flatters* flag marks the case where mid calls it a credit and the
+   real book calls it a debit.
+5. **Read the five-axis score — and read the axes, not just the number.** Carry, VRP on the
+   contract you're *opening*, safety in expected moves, gamma relief, margin change. Two
+   things to internalize:
+   - a **same-strike roll scores worse on safety as tenor grows**, and that is correct — it
+     buys time, not safety, because the move budget grows with √T;
+   - the **VRP axis prices the new leg**. Rolling into cheap vol to repair an old position is
+     the classic losing roll, and nothing else on the screen will show it to you.
+6. **Treat gates as vetoes, not as inputs.** A debit roll or one selling below forecast RV
+   caps the verdict at *questionable* however well it averages. A new strike inside one
+   expected move is an open gate even on a high score.
+7. **Check the chain before rolling again.** If this leg has already been rolled, look at the
+   chain warnings: rolled ≥3×, size growing, cumulative P&L negative, every roll made while
+   losing. That pattern is how an uncapped-tail book dies, and each individual roll looks like
+   "collect more credit" right up until it doesn't.
+8. **Prefer a roll that stays a credit** and moves delta toward neutral, unless you're
    deliberately taking a directional view.
-5. **Execute manually**, then update the book (which re-runs the sync check).
+9. **Execute manually**, then update the book (which re-runs the sync check). The roll context
+   — *were you in profit or defending?* — is captured at that moment and cannot be
+   reconstructed later; it is what makes the weekly review's "does rolling work for me"
+   answerable at all.
 
 ## 6. Taking profit / closing
 
@@ -132,9 +160,17 @@ Before selling any premium, decide whether premium is worth selling *now*.
 1. **Open the scorecard.** Realized win-rate, expectancy, and profit factor, segmented by
    strategy, underlying, DTE-at-entry, and IV-rank-at-entry.
 2. **Read the discipline metrics:** premium-capture efficiency and loss/win size asymmetry.
-3. **Trust only what the sample supports** — insights are gated on size and say "only N so
+3. **Read the roll-chain evidence.** Completed chains you never rolled, rolled while in
+   profit, and rolled while tested, compared on average P&L. This is the only honest answer
+   to *"does rolling work for me"* — and note that a chain containing both kinds of roll
+   counts as **defensive**, because the defensive roll is the risk-relevant event.
+4. **Read the theta-efficiency roll-up.** How many open legs are *underpaid* — realized
+   movement running above what their theta pays for — plus the median edge ratio and any legs
+   flagged for stale greeks. A book can print positive theta every day and still be losing in
+   expectation; this is the number that says so.
+5. **Trust only what the sample supports** — insights are gated on size and say "only N so
    far" below it.
-4. **Let it feed forward.** These same outcomes drive the calibration nudges that tilt next
+6. **Let it feed forward.** These same outcomes drive the calibration nudges that tilt next
    week's playbook toward what has actually worked for you (capped so market signals still
    dominate).
 

@@ -424,12 +424,57 @@ against the exact fee model** [22] rather than a formula:
 A short put's fee-adjusted breakeven shifts **up** toward the strike (less room); a short
 call's shifts **down**; longs need a bigger move to overcome the drag.
 
+### 8.6 Executable pricing: the decomposition and its identity **[S]**
+
+For a structure of legs $\ell$ with sides $s_\ell \in \{+1 \text{ (sell)},\, -1 \text{ (buy)}\}$
+and quantities $q_\ell$, define the executable price of each leg as the side of the book the
+fill actually takes:
+
+$$p_\ell = \begin{cases}\text{bid}_\ell & s_\ell = +1\\[2pt] \text{ask}_\ell & s_\ell = -1\end{cases}
+\qquad\qquad m_\ell = \tfrac12(\text{bid}_\ell + \text{ask}_\ell)$$
+
+Then
+
+$$C_{\text{mid}} = \sum_\ell s_\ell\,m_\ell\,q_\ell, \qquad
+C_{\text{exec}} = \sum_\ell s_\ell\,p_\ell\,q_\ell, \qquad
+C = C_{\text{exec}} - \sum_\ell \text{fee}_\ell$$
+
+with $\text{fee}_\ell$ from §8.1. The two costs of reality are named separately:
+
+$$\text{spread cost} = C_{\text{mid}} - C_{\text{exec}}, \qquad
+\text{entry fees} = \sum_\ell \text{fee}_\ell$$
+
+giving the **auditable identity** that every candidate must satisfy:
+
+$$\boxed{\ C_{\text{mid}} - C \;=\; \text{spread cost} \;+\; \text{entry fees}\ }$$
+
+and the retention ratio
+
+$$\eta = \frac{C}{C_{\text{mid}}}$$
+
+**Why an identity rather than just a pessimistic number.** Any monotone haircut would make
+the screener more conservative. An identity makes it **checkable**: the three reported
+figures cannot drift apart without the equation failing, which is what a test asserts. The
+alternative — a single "adjusted credit" — is unfalsifiable by construction.
+
+**Per-leg net price.** Each leg also carries $p_\ell - \text{fee}_\ell/q_\ell$ for a sold leg
+and $p_\ell + \text{fee}_\ell/q_\ell$ for a bought one, so the payoff engine computes
+breakevens that already include fees **without knowing anything about fee models**. Fees are
+folded in at the only place that knows about them.
+
+**What is deliberately absent.** Exit costs. A screener ranks *entries*; what it costs to
+leave depends on when and why, and is priced by the roll analyzer (§9.6) and the P&L
+calculator instead. Mixing the two would double-count the spread on positions held to expiry,
+which is the majority of them on this book.
+
 ---
 
-## 9. Theta efficiency — the one comparison that carries information
+## 9. Position management: theta efficiency and rolls
 
-This is the most mathematically load-bearing section in the system, because the obvious
-version of it is **circular** and produces a number that looks informative and is not.
+§9.1–9.5 cover the carry on a leg you hold; §9.6–9.7 cover the decision to replace it.
+
+Theta efficiency is the most mathematically load-bearing piece in the system, because the
+obvious version of it is **circular** and produces a number that looks informative and is not.
 
 ### 9.1 The daily P&L decomposition **[L]** — ref. [23]
 
@@ -485,6 +530,81 @@ On an enriched leg, $\Theta$ is **position** theta (already $\times q$, signed s
 earns positive) while $\Gamma$ and $\nu$ are **per-unit and unsigned**. Mixing the two
 scales leaves a stray $q$ inside the square root and yields a plausible, wrong breakeven.
 Everything converts to per-unit first, and the function signature exists to force it.
+
+Two further per-leg readings come from the same greeks. **Vol-spike fragility**, as the
+number of days of theta that one vol point costs:
+
+$$D_{\nu} = \frac{|\nu|\,q}{\Theta}$$
+
+and **days to collect** the premium still outstanding, $D_{c} = \text{mark}\cdot q/\Theta$.
+A leg needing many days of carry to earn back a one-point IV rise is fragile regardless of
+how good its edge ratio looks.
+
+### 9.6 Roll advantage score **[S]**
+
+A roll's *price* (§8.6, applied twice — the old leg is bought back at the ask, the new one
+sold at the bid, and a fee is paid on both fills) answers "what does this pay?" but not "is
+this a good trade?". Five axes are scored on $[0,100]$ and weight-averaged:
+
+$$\text{Score} = \frac{\sum_{a \in A} w_a\,f_a(x_a)}{\sum_{a \in A} w_a}$$
+
+where $A$ is the set of axes that could actually be computed — **weights renormalize over
+$A$**, so a missing greek feed lowers the score's resolution rather than silently scoring
+that axis zero. Each $f_a$ is a **piecewise-linear, clamped** map from a raw value to a
+subscore, with breakpoints fixed in advance and visible.
+
+| Axis | $w_a$ | Raw quantity $x_a$ |
+|---|---|---|
+| carry | 0.25 | credit per day ÷ collateral, annualized ($\times 365$) — the yield on the time bought |
+| vrp | 0.25 | $\sigma_{\text{IV}}^{\text{new}} / \hat\sigma_{\text{RV}}^{\text{fcast}}$ — on the contract being **opened** |
+| safety | 0.25 | $\displaystyle \frac{\lvert K_{\text{new}} - S\rvert}{S\,\sigma_{\text{new}}\sqrt{T_{\text{new}}}}$ — strike distance in expected moves |
+| gamma | 0.15 | $\dfrac{(\lvert\Theta\rvert/\Gamma)_{\text{new}}}{(\lvert\Theta\rvert/\Gamma)_{\text{old}}}$ — carry per unit of convexity |
+| capital | 0.10 | $\text{IM}_{\text{new}} / \text{IM}_{\text{old}}$ (§8.3) |
+
+**Why safety is measured in $\sigma\sqrt T$ and not in %OTM.** Raw distance is not comparable
+across tenors: 8% away is a wall at 2 DTE and nothing at 60. Normalizing by the expected move
+over the *contract's own remaining life* makes candidates at different expiries directly
+comparable. The consequence is worth stating because it looks like a bug and is not: a
+**same-strike roll scores progressively worse on safety as the tenor grows**, because it buys
+time while the move budget grows as $\sqrt{T}$. It is buying time, not safety, and the axis
+says so.
+
+**Why the VRP axis prices the new contract.** Rolling into cheap vol to repair an old
+position is the classic losing roll, and it is invisible unless the leg being *opened* is
+checked against forecast RV.
+
+**Gates are separate from the score.** Two conditions — a debit roll, and selling below
+forecast RV ($x_{\text{vrp}} \le 1$) — cap the verdict at *questionable* regardless of the
+weighted average, and a new strike inside one expected move ($x_{\text{safety}} < 1$) or a
+margin rise above 50% is reported as an open gate. Folding gates into the score would let a
+strong carry number average away a structural objection; kept separate, a high score with an
+open gate still reads as a warning.
+
+### 9.7 Roll-chain evidence and its gates **[S]**
+
+Legs linked by a roll chain are bucketed by the **state at roll time**, and average P&L is
+compared:
+
+$$\text{never rolled} \;\;\big|\;\; \text{rolled while in profit} \;\;\big|\;\; \text{rolled while tested}$$
+
+Four rules make the comparison honest rather than flattering:
+
+1. **Only completed chains are scored.** An open chain's P&L is not decided; including it
+   biases the result in whichever direction the position currently sits.
+2. **A chain containing both kinds of roll counts as *tested*.** The defensive roll is the
+   risk-relevant event; classifying a mixed chain as clean would bias the comparison in
+   rolling's favour.
+3. **Roll context is captured at roll time**, on the new leg. "Was I in profit when I rolled?"
+   cannot be reconstructed from a closed ledger.
+4. **Sample gates rise with the cut**: an overall minimum of completed chains before any
+   verdict, *and* a per-bucket minimum before two buckets are compared. Below either, counts
+   are shown and the verdict is withheld.
+
+Martingale warnings are **structural, not predictive** — they describe the shape of what has
+already happened rather than forecasting an outcome: rolled $\ge 3$ times; size grew across
+the chain; cumulative realized P&L negative; every roll made while losing. On a book with an
+uncapped tail, a long roll chain with growing size is the classic failure pattern, and each
+individual roll looks like "collect more credit" right up until it doesn't.
 
 ---
 

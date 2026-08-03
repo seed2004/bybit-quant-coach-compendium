@@ -204,9 +204,63 @@ another venue's ATM.
 - **Term structure** = the shape of ATM IV across expiries (backwardation vs contango),
   which flips the attractiveness of calendar structures.
 
-### 3.8 Executable close quote and Capture% (mark is not a price)
+### 3.8 Executable pricing — the mark is not a price
 
-The most practically important insight in the whole system:
+The most practically important insight in the whole system. It applies at **both ends** of a
+trade, and the system got the exit right long before it got the entry right.
+
+#### 3.8a Entry: what a structure actually fills at
+
+As a taker you never get mid. You get the side of the book that is worse for you:
+
+- **SELL a leg → you receive the BID.**
+- **BUY a leg → you pay the ASK.**
+
+So a short strangle collects `bid_put + bid_call`, not `mid_put + mid_call`; a bull put
+spread collects `bid_short − ask_long`. On the wide, deep-OTM books this account trades the
+difference is not a rounding detail — **for a put quoted 5 / 25 the mid is 15 and the bid is
+5, so two thirds of the "credit" a mid-based screener reports is spread handed to the market
+maker on entry.** Every fill also pays a trading fee, charged on *every* leg — a four-leg
+iron condor pays it four times on the way in.
+
+The screener therefore reports **three numbers side by side**, so the gap cannot be missed:
+
+| | meaning |
+|---|---|
+| `net_credit_mid` | the optimistic number a mid-based screener shows |
+| `net_credit_exec` | after crossing the spread: bid on shorts, ask on longs |
+| **`net_credit`** | after crossing **and** after entry fees — **what you keep** |
+
+`net_credit` is the headline **deliberately**: it is the only one of the three that describes
+money, and every downstream figure (breakeven, max loss, annualized yield, probability of
+profit) is derived from it, so a candidate's numbers reconcile with each other. The identity
+
+$$\texttt{net\_credit\_mid} - \texttt{net\_credit} = \texttt{spread\_cost} + \texttt{entry\_fees}$$
+
+always holds, which is what makes the decomposition auditable rather than merely
+pessimistic. **Edge retention** = `net_credit / net_credit_mid` is the fraction of the paper
+credit that survives contact with the order book: a structure retaining 90% is a real trade,
+one retaining 20% is mostly a gift to the market maker. (Formal statement:
+[07 §8.6](07-math-and-references.md).)
+
+Two failure modes are named rather than smoothed over:
+
+- **`credit_vanishes`** — mid calls it a credit trade and the real book calls it a debit.
+- **`quote_estimated`** — the venue publishes no quote on the side this fill needs (normal on
+  short-DTE deep-OTM contracts), so the price fell back to mid/mark. The number is then a
+  *model* price, not a fillable one, and the caller is told so rather than shown a plausible
+  fiction.
+
+**Exit costs are deliberately excluded from entry pricing.** What it costs to get out depends
+on when and why you leave — expiring worthless is free, closing early crosses the spread
+again and pays another fee — and that belongs to the roll analyzer (§3.20) and the P&L
+calculator, not to a screener ranking entries.
+
+**One source of truth.** The screener and the roll analyzer originally carried separate
+copies of the same three helpers, which is exactly how a fix to one silently misses the
+other. They now share a single pricing module; the identity above is what a test asserts.
+
+#### 3.8b Exit: the executable close quote and Capture%
 
 - Bybit's option **mark is theoretical (a model mid)**. It is *not* a price you can trade.
 - To **close** a position you cross the spread: a short buys back at the **ask**, a long
@@ -369,6 +423,126 @@ kinds of drift: **new** legs present on the exchange but not tracked, **size-cha
 trader is prompted to import/update or to record the close. The diff runs on every book
 reload so any action clears or refreshes it immediately, rather than lingering until the
 next timer tick.
+
+### 3.20 Roll economics — price it, score it, then check your own record
+
+Rolling is the single most consequential recurring decision on a short-premium book, and the
+one most easily rationalized. The system attacks it in three layers, each answering a
+question the previous one cannot.
+
+#### Layer 1 — what does this roll actually pay?
+
+For a short leg that is tested or near expiry, the analyzer tables the concrete choices from
+the live chain: **roll out** (same strike, later expiry) and **roll out & adjust** (strike
+moved further OTM toward a defensive delta target, later expiry).
+
+A roll **crosses the spread twice** — buy the old leg back at the ask, sell the new one at
+the bid — and pays a trading fee on **both** fills. Mid-based roll numbers therefore
+overstate the payment systematically; on a wide deep-OTM book the entire apparent "credit"
+can be slippage. The same three-number decomposition as §3.8a applies, with `mid_flatters`
+flagging the case where mid says credit and reality says debit.
+
+**Per-day figures, not the raw credit, are the comparison.** The variance risk premium's term
+structure slopes steeply downward, so rolling further out for a bigger *absolute* credit
+often buys **less premium per unit of time-risk**. Candidates at different expiries are
+compared on credit-per-day and yield-per-day (credit per day as a percentage of collateral),
+never on the headline number.
+
+#### Layer 2 — is it a *good* roll, not merely a paying one?
+
+A roll can pay a fat credit and still be a bad idea: it may be selling cheap vol, moving the
+strike inside one expected move, or doubling the margin to buy a few days. Five independent
+axes are scored 0–100 and weight-averaged, and **the full breakdown is always returned**, so
+the trader can disagree with any single axis instead of trusting an opaque rank:
+
+| Axis | Weight | What it asks |
+|---|---|---|
+| **carry** | 0.25 | credit per day on collateral, annualized — are you paid enough per day? |
+| **vrp** | 0.25 | the **new** contract's IV vs forecast RV — is what you're selling actually rich? |
+| **safety** | 0.25 | distance from spot to the new strike **in expected moves** |
+| **gamma** | 0.15 | improvement in \|θ\|/\|Γ\| — the mechanical reason to roll out of expiry week |
+| **capital** | 0.10 | margin change — a credit that doubles initial margin is not free |
+
+Three design points carry the section:
+
+- **Safety is measured in expected moves ($\sigma\sqrt{T}$), not in %OTM.** Raw distance is
+  not comparable across tenors. A consequence worth stating because it surprises people: a
+  **same-strike roll scores *worse* on safety as the tenor grows** — correct, because it buys
+  *time*, not *safety*, while the move budget grows with $\sqrt{T}$.
+- **The VRP axis prices the contract you are opening, not the one you are closing.** "Rolling
+  into cheap vol to fix an old problem" is the classic losing roll, and it is only visible if
+  the new leg's IV is checked against forecast RV.
+- **Gates are reported separately and never folded silently into the score.** A debit roll,
+  or one selling below forecast RV, caps the verdict at *questionable* no matter how the
+  weighted average lands — so a high score with an open gate still reads as a warning rather
+  than as approval.
+
+Weights renormalize over whichever axes are computable, so a missing gamma feed degrades the
+score's resolution instead of silently zeroing an axis.
+
+#### Layer 3 — across your history, do rolls create value or postpone losses?
+
+Layers 1 and 2 are about one decision in front of you. Layer 3 is the only one that can
+answer *"does rolling work for me"*. Legs are linked by a **roll chain**: the original
+position, then each replacement created by rolling it.
+
+- **Martingale detection.** Rolling a tested position repeatedly — especially while
+  increasing size — is the classic way an income book with an uncapped tail dies. Each roll
+  individually looks like "collect more credit"; **the chain is what reveals that fresh risk
+  has been financing a losing position.** Warnings fire on structure, not prediction: rolled
+  ≥3×; size grew across the chain ("adding size to defend a position is doubling down, not
+  managing risk"); the chain's realized total is negative; every roll in the chain was made
+  while losing.
+- **Personal evidence.** Completed chains are split by **the state at roll time** — rolled
+  while in profit (redeploying a winner) versus rolled while tested (defending a loser) — and
+  both are compared against positions never rolled. Two rules keep that comparison honest:
+  only **completed** chains are scored (an open chain's P&L is not decided yet, and counting
+  it flatters whichever way the position happens to be sitting), and a chain containing
+  **both** kinds of roll counts as *defensive* — the defensive roll is the risk-relevant
+  event, and treating a mixed chain as clean would bias the comparison in rolling's favour.
+- The roll context is **captured on the new leg at roll time**, never reconstructed
+  afterwards, because "was I in profit when I rolled?" cannot be recovered from a closed
+  ledger.
+- Below the sample gates the report shows **counts and withholds the verdict**.
+
+### 3.21 Theta efficiency — is the carry actually being paid for?
+
+The portfolio table shows theta per day, but that number alone says nothing. **Theta is not
+income: it is the rent collected for carrying gamma.** Over a day a short option earns
+roughly $|\Theta| - \tfrac12\Gamma(\Delta S)^2$, so the move that exactly consumes a day's
+theta is $\Delta S^\ast = \sqrt{2|\Theta|/\Gamma}$.
+
+**The trap this module exists to avoid.** It is tempting to compare $\Delta S^\ast$ against
+the IV-implied daily move. That comparison is **circular**: Black–Scholes fixes
+$\Theta = -\tfrac12\sigma^2S^2\Gamma$, so substituting collapses $\Delta S^\ast$ into the
+implied move itself. Verified on the live chain, the ratio sits at a flat **≈0.96 across
+every strike and every tenor** — it carries no information at all. (Derivation:
+[07 §9.2](07-math-and-references.md).)
+
+**The comparison that does carry information is against *realized* movement.** That is the
+variance risk premium measured on *this specific leg with its own greeks*, rather than as a
+surface average — and it is the honest answer to "is this theta worth it". Realized above
+breakeven means the position **loses in expectation even while theta prints positive every
+day**, which is precisely the failure mode a theta-focused dashboard would otherwise hide.
+
+Two by-products fall out of the same numbers:
+
+- **A stale-greeks detector.** Because the ratio in the trap above *must* be ≈0.96, any leg
+  wandering far from it has stale or inconsistent greeks, and its efficiency read is flagged
+  untrustworthy. A degenerate identity turned into a data-quality check.
+- **Fragility to a vol spike**, as the number of days of theta one vol point costs
+  ($|\nu| q / \Theta$). A leg needing many days to earn back a one-point IV rise is fragile
+  regardless of how good its carry looks.
+
+Alongside these: theta per unit of margin (comparable across legs of different sizes) and
+days-to-collect the remaining premium. When no realized-movement baseline is available the
+verdict is **`unknown`** — the system does not substitute implied, because that is exactly
+the circular comparison above.
+
+**The units trap, stated because it is invisible.** On an enriched leg theta is *position*
+theta (already multiplied by quantity) while gamma and vega are *per-unit*. Mixing the two
+scales leaves a stray quantity inside the square root and produces a plausible, wrong
+breakeven. Everything converts to per-unit first.
 
 ---
 

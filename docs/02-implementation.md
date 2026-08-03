@@ -17,7 +17,8 @@ offline) versus **I/O shell** (network, disk, endpoints).
 | Chain builder | Merge instruments + tickers into unified contract objects; DTE filter; short cache |
 | RV / IV stats | ATR, annualized realized vol, IV rank, IV/RV ratio |
 | Volatility models | Parkinson / Garman-Klass / Yang-Zhang RV, HAR forecast, VRP, expected move, trend filter, funding summary |
-| Fees | Trading-fee (with 7% premium cap) and delivery-fee model; round-trip fee helper |
+| Fees | Trading-fee (with the venue's premium cap) and delivery-fee model; round-trip fee helper |
+| Executable pricing | The single source of truth for "which side of the book do I get?" — bid on shorts, ask on longs, fee per fill; returns the mid / exec / after-fee decomposition and flags estimated quotes. Shared by the screener and the roll analyzer |
 | Risk / margin | Per-leg OTM-scan initial margin; position sizing; capital & utilization limits; vol-target scale |
 | Payoff | Piecewise-linear breakeven / max-profit / max-loss / reward:risk for any leg set |
 | P&L calculator | Side-aware gross minus round-trip fees; multi-leg totals; fee-adjusted breakeven via bisection |
@@ -30,7 +31,10 @@ offline) versus **I/O shell** (network, disk, endpoints).
 | Strategy engine | Runs all generators across the chain (calendars handled outside the per-expiry loop) |
 | Playbook | Transparent additive scoring of every strategy; ranked output; "Wait" logic; gamma-flip |
 | Idea engine | Re-runs the engine filtered to the coach's own strategy/DTE/delta band; sizes candidates |
-| Roll engine | Same-strike vs strike-adjusted roll tables for flagged legs |
+| Roll engine | Same-strike vs strike-adjusted roll tables for flagged legs, priced executable with both fees; per-day and per-day-yield figures |
+| Roll score | Five-axis roll assessment (carry / VRP / safety / gamma / capital) with renormalized weights, full component breakdown, and gates kept separate from the score |
+| Roll chains | Links legs by roll chain; martingale warnings; never-rolled vs rolled-in-profit vs rolled-tested evidence buckets, sample-gated |
+| Theta edge | Per-leg breakeven move from θ and Γ, compared against realized movement; stale-greeks detector; θ/margin, vol-spike fragility, days-to-collect |
 | Coach | Net signed book greeks; book assessment; prioritized position actions; setup annotation |
 | Analytics | Closed-trade win-rate / expectancy / profit factor, segmented; discipline metrics |
 | Calibration | Personal-edge nudges from closed trades, regime-aware, expectancy-gated, capped |
@@ -108,7 +112,72 @@ percentiles are computed only over the trailing window of *past* data. Any accid
 a future bar would inflate results, so the slice boundaries are the invariant the tests
 guard.
 
-### 2.7 Background snapshot loop
+### 2.7 Pricing a structure the way it fills
+
+Take a list of `(contract, side, quantity)`. For each leg pick the side of the book the fill
+actually takes — bid to sell, ask to buy — falling back to mid, then to mark, when the needed
+side is unquoted, and **record that the fallback happened**. Compute the leg's fee from the
+index price and the executable premium. Accumulate three running totals with the sign
+convention *positive = credit received*: at mid, at executable prices, and executable minus
+fees. Return all three plus their difference decomposed into spread cost and fees, the
+retention ratio, per-leg detail including a **fee-folded net price**, and two boolean flags:
+credit-vanishes and quote-estimated.
+
+Two consequences of doing it this way rather than applying a haircut:
+
+- The identity `mid − net = spread + fees` is **checkable**, and a test asserts it. A single
+  "adjusted credit" would be unfalsifiable.
+- Because each leg carries a fee-folded price, the payoff engine produces fee-inclusive
+  breakevens **without importing the fee model** — fees are folded in at the one place that
+  knows about them, and every other consumer stays ignorant of venue fee rules.
+
+### 2.8 Building a roll table
+
+For a short leg that is tested or near expiry: buy the old leg back at its **ask**, then for
+each candidate expiry (soonest first, capped) sell the new leg at its **bid**. Two tables are
+produced — same strike, and strike adjusted toward a defensive delta target. Each row pays a
+trading fee on both fills.
+
+Per row, derive `added_days` from the DTE difference and divide the after-fee credit by it;
+divide again by collateral (strike for puts, spot for calls — the same convention the matrix
+tab's annualized yield uses) to get yield-per-day. **These per-day figures, not the raw
+credit, are what makes rows at different expiries comparable**, because the VRP term structure
+slopes down steeply enough that a bigger absolute credit often buys less premium per unit of
+time-risk.
+
+Then score the row (§2.9) — which requires locating the leg *being closed* in the chain, for
+the gamma-relief axis. When it cannot be located the row still prices correctly and simply
+carries no score, rather than scoring on a guessed old leg.
+
+### 2.9 Scoring a roll
+
+Each axis produces `(raw value, subscore, weight, plain-English reason, display string)` and
+appends to a component list; the score is the weight-average over **whichever axes computed**,
+with the used-weight total reported so a partially-scored roll is visibly partial. Subscores
+come from piecewise-linear interpolation over fixed breakpoints, clamped at both ends.
+
+Gates accumulate into a separate list. Two of them are *hard* — a debit roll, or a new
+contract whose IV is at or below forecast RV — and force the verdict to *questionable*
+regardless of the average; the rest are advisory and surface next to the score. The
+component list is always returned, so the UI can show a trader exactly which axis they are
+disagreeing with.
+
+### 2.10 The theta-efficiency read
+
+Convert position theta down to per-unit so the quantity cancels against per-unit gamma, then
+compute the breakeven move and express it as a percentage of spot. Compute the leg's own
+implied daily move and take the ratio: if it is far from the expected ≈0.96 the greeks are
+stale, so flag the leg and treat its read with suspicion. Divide the breakeven percentage by
+the **realized** daily percentage supplied by the caller (from ATR or an RV forecast) for the
+edge ratio and verdict. If the caller supplies no realized baseline, the verdict stays
+`unknown` — the system does **not** fall back to implied, because that is the circular
+comparison the module exists to avoid.
+
+The book-level roll-up reports how many legs scored, how many are underpaid, how many have
+suspect greeks, and the median edge ratio — deliberately the median, since one deep-OTM leg
+with a near-zero gamma can produce an enormous ratio that a mean would not survive.
+
+### 2.11 Background snapshot loop
 
 Wake on a coarse interval. For each underlying, check whether a daily regime snapshot and/or
 an intraday IV snapshot is *due* (by UTC day and by session window). If either is due,
@@ -126,8 +195,9 @@ Roughly 40 endpoints, grouped:
   carry, the RV and IV backtests.
 - **Portfolio:** enriched legs (with live mark, greeks, executable close quote, per-leg
   margin), volume summary, cycles, risk summary, analytics.
-- **Coach:** the fused brief, scenario stress test, expiry focus, roll analyzer, regime
-  history, grounded natural-language Q&A.
+- **Coach:** the fused brief, scenario stress test, expiry focus, the roll analyzer (priced
+  table + five-axis score) and the roll-chain evidence report, regime history, grounded
+  natural-language Q&A.
 - **Account & settings:** sub-account CRUD and switch, credential status, risk config, the
   bring-your-own-key config.
 - **Reconciliation:** the position preview/diff and the import.

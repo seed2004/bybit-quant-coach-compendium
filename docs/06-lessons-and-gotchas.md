@@ -40,6 +40,18 @@ These are the parts most worth carrying to any similar project.
   100x errors — but contract *counts* still need the per-underlying size.
 - **Never let `inf`/`nan` reach JSON.** An infinite profit factor (no losses yet) must be
   `null`; infinity breaks the browser's JSON parse and silently blanks the screen.
+- **A mid-based credit is not a conservative estimate, it is a different number.** On a put
+  quoted 5 / 25 the mid is 15 and the bid is 5 — **two thirds of the reported credit was
+  spread**. The fix that mattered was not applying a haircut but reporting the decomposition
+  as an **identity** (`mid − net = spread + fees`), because an identity can be tested and a
+  haircut cannot.
+- **Publish the headline number your other numbers derive from.** The first version of
+  executable pricing reported the *pre*-fee credit as the headline while deriving max-loss
+  from the *post*-fee one. Every figure was individually defensible and the candidate did not
+  reconcile with itself. A test comparing max-loss against net credit caught it.
+- **Two copies of a pricing rule is one copy plus a future bug.** The screener and the roll
+  analyzer each carried their own bid/ask/fee helpers — which is exactly how a fix to one
+  silently misses the other. They now share one module.
 
 ## 3. Modeling discipline
 
@@ -61,6 +73,32 @@ These are the parts most worth carrying to any similar project.
 - **Let calibration tilt, never override.** Personal-edge nudges are expectancy-gated and
   hard-capped so the market signal and risk limits always dominate. A learning loop that can
   overpower its guardrails is a liability.
+- **Check whether your "signal" is an identity in disguise.** Comparing a leg's theta/gamma
+  breakeven move against the *implied* move looks like a genuine efficiency read. It is
+  algebra: Black–Scholes fixes θ = −½σ²S²Γ, so the ratio is pinned at ≈0.96 across every
+  strike and tenor. The tell was that it *never varied* — and the fix was to compare against
+  **realized** movement instead. A constant is not a signal; but a constant you can *predict*
+  makes an excellent data-quality check, which is what that ratio became.
+- **Normalize before you compare, or the comparison encodes the tenor.** Roll safety measured
+  as %OTM is not comparable across expiries; measured in expected moves (σ√T) it is. This has
+  a consequence that reads like a bug and is not: a same-strike roll scores *worse* on safety
+  the further out you go, because it buys time while the move budget grows with √T.
+- **Score the thing you are about to own, not the thing you are leaving.** A roll's VRP axis
+  prices the *new* contract. Rolling into cheap vol to repair an old position is the classic
+  losing roll, and it is invisible on every other column.
+- **Gates must sit beside the score, never inside it.** A weighted average will happily let a
+  strong carry number bury a structural objection like "this is a debit" or "you are selling
+  below forecast RV". Kept separate, a high score with an open gate still reads as a warning.
+- **Some warnings should be structural, not predictive.** Roll-chain flags — rolled ≥3×, size
+  growing, cumulative P&L negative — describe the *shape of what already happened*. They make
+  no forecast, so they cannot be wrong, and on an uncapped-tail book that shape is the
+  failure mode itself.
+- **Capture the context at the moment, or lose it forever.** "Was I in profit when I rolled?"
+  cannot be reconstructed from a closed ledger. Same principle as the entry-context flywheel:
+  the cheapest data to record is the data that is impossible to backfill.
+- **Classify ambiguous samples against your own hypothesis.** A roll chain containing both an
+  opportunistic and a defensive roll counts as **defensive**. The other choice would have
+  quietly biased the evidence in rolling's favour — which is the question being tested.
 
 ## 4. Empirical findings worth remembering
 
