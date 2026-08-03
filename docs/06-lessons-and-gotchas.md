@@ -250,6 +250,47 @@ three of them in a row.
 - **Verify by observing the real flow.** Unit tests can't catch a correct formula wired to the
   wrong column. Drive the UI, read the DOM back, and compare against what the number *should*
   mean. The most important bugs were found this way.
+
+### Verification (see [02 — Implementation §5](02-implementation.md))
+
+- **A passing suite proves the tests pass, not that they would fail.** Break each guard
+  deliberately and confirm the suite goes red. A **surviving mutation is a missing test** — one
+  survived here (an account switcher re-merging two ledgers) and became a test named after
+  exactly that. And when a mutation produces no failure, check the *mutation* first: one of
+  mine was malformed (a method name without its call parentheses), so the "broken" line was
+  never reached. That is a false negative in the mutation, not evidence about the test.
+- **Before a big refactor, freeze the output and byte-compare it.** "This should be
+  behaviour-preserving" is not a test. A golden snapshot over a frozen chain fails and *names
+  the field*. The escape hatch that re-approves the snapshot is fine — provided the rule is
+  that **the resulting diff is the review artefact**, never a way to make the test pass.
+- **A golden fixture must be free of `now()` and of the network**, or it drifts sub-second
+  between runs and can never be byte-compared.
+- **Generate fixture prices, don't eyeball them.** Hand-written mids that disagreed with their
+  own implied vols — a 3-DTE ATM option written as 600 where 50% vol implies ~1,800 — quietly
+  **starved four strategy modules of any candidate at all**, so those modules were "tested"
+  against an empty result. Prices from a model keep price, delta and IV agreeing.
+- **Make fixtures adversarial on purpose.** Spreads that widen with distance from the money and
+  one deliberately one-sided contract are what exercise the code paths that matter; a tidy
+  fixture tests the happy path and nothing else.
+- **Duplicated logic drifts silently — test both copies against each other.** Numbers computed
+  in both Python and JavaScript are compared by **extracting the real frontend functions and
+  running them in Node**. Never against a re-typed copy: a copy drifts too, and a parity test
+  comparing two copies of the same drift is worse than none.
+- **Assert absences, not just behaviour.** "No order method exists on this client" and "the
+  token is minted read-only" survive refactors that a behavioural test would not — and they
+  put the final guarantee on the **venue**, not on our own good intentions.
+- **A stubbed transport means a private client can be built and verified without ever holding
+  a credential.** Offline by construction is both safer and faster than fixtures recorded from
+  a live account.
+- **The most dangerous test is one that passes without exercising anything.** A refactor moved
+  a module path that ~118 tests patched *by name*; the patches then pointed at nothing, the
+  tests kept passing, and they had stopped testing the code. **Point fixtures at a seam, not at
+  an implementation detail** — and when reviving a suite, confirm it can still fail.
+- **Compare rounded values with an absolute tolerance.** A venue publishing gamma to 5dp turns
+  a true 6.2e-07 into exactly 0.0, and no relative tolerance can ever match a rounded zero.
+- **Verify generated artefacts by reading them back.** This compendium's PDF build is checked
+  by extracting the text and asserting no unrendered markup survived — which found three
+  rendering bugs that had each **silently dropped content** while looking entirely normal.
 - **`.gitignore` has no inline comments.** A `pattern  # comment` line treats the whole thing
   as the pattern and silently ignores nothing — which once let plaintext credentials get
   tracked. Comments go on their own line, and the ignore rules are the real secret-leak guard.
@@ -266,3 +307,11 @@ three of them in a row.
 Build the boring, honest plumbing first — executable prices, real fees, correct margin,
 lookahead-free backtests, sample-gated statistics — and *then* the synthesis on top is
 trustworthy. A pretty score on top of a fictional mark is worse than no score at all.
+
+**And the corollary, learned the hard way and repeatedly:** the bugs that survive are the ones
+where **every individual number is internally consistent**. Nothing disagrees with anything, so
+nothing raises an alarm. They are caught only by checking the system against something outside
+it — an identity that must hold, a structural impossibility (a short-put breakeven above the
+highest strike in the book), a value too absurd to be a modelling error (−2,091,700%), or a
+constant that should vary and never does. Build those external checks in deliberately; you
+will not stumble across them.
